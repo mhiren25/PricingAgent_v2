@@ -43,7 +43,7 @@ class SupervisorAgent:
         }
     
     def analyze_query(self, state: Dict) -> Dict:
-        """Analyze query with structured output - order_id optional based on intent"""
+        """Analyze query with structured output - handles date normalization"""
         
         analysis_prompt = f"""Analyze this financial trading query:
 
@@ -55,31 +55,56 @@ class SupervisorAgent:
 - For Knowledge queries (like "How does pricing work?"), NO order_id needed
 - For Data queries without specific order (like "Show system logs"), NO order_id needed
 - Only extract order_id if user explicitly mentions an order to investigate
+- Extract dates in ANY format mentioned (will be normalized automatically)
+- If no date is mentioned, leave empty (current date will be used)
 
-**Examples:**
-- "How does GOLD tier pricing work?" → intent=Knowledge, order_id=""
-- "Show system health" → intent=Monitoring, order_id=""
-- "Investigate order ABC123" → intent=Investigation, order_id="ABC123"
-- "Show logs for order ABC123" → intent=Data, order_id="ABC123"
+**Date Examples:**
+- "2025-10-12", "12-10-2025", "10/12/2025" → All valid formats
+- "today", "yesterday" → Natural language
+- No date mentioned → Will use current date
+
+**Query Examples:**
+- "How does GOLD tier pricing work?" → intent=Knowledge, order_id="", date=""
+- "Show system health" → intent=Monitoring, order_id="", date=""
+- "Investigate order ABC123" → intent=Investigation, order_id="ABC123", date="" (current date will be used)
+- "Investigate order ABC123 on 2025-10-12" → intent=Investigation, order_id="ABC123", date="2025-10-12"
+- "Compare order ABC123 with DEF456" → intent=Comparison, order_id="ABC123", comparison_order_id="DEF456", dates="" (current date for both)
+- "Compare order ABC123 from yesterday with DEF456 from today" → Extract both dates
 
 Provide structured output."""
         
         try:
             params: QueryParameters = self.llm.invoke(analysis_prompt)
+            
+            # Ensure dates are properly set
+            params.ensure_dates_set()
+            
             state["parameters"] = params
+            
+            # Format date display
+            date_info = ""
+            if params.date:
+                date_info = f"\nDate: {params.date}"
+            
+            comparison_info = ""
+            if params.intent == "Comparison":
+                comparison_info = f"\nComparison Order: {params.comparison_order_id or 'N/A'}"
+                if params.comparison_date:
+                    comparison_info += f"\nComparison Date: {params.comparison_date}"
             
             state["messages"].append(AIMessage(
                 content=f"""**[Supervisor Analysis]**
 Intent: {params.intent}
-Order ID: {params.order_id or 'Not required'}
-Comparison Order: {params.comparison_order_id or 'N/A'}
+Order ID: {params.order_id or 'Not required'}{date_info}{comparison_info}
 Reasoning: {params.reasoning}""",
                 name=self.name
             ))
         except Exception as e:
-            # Fallback - create parameters with empty order_id
+            # Fallback - create parameters with empty order_id and current date
+            from src.utils.date_handler import DateHandler
             state["parameters"] = QueryParameters(
                 intent="Knowledge",
+                date=DateHandler.get_current_date(),
                 reasoning=f"Fallback due to error: {e}"
             )
         
@@ -87,24 +112,30 @@ Reasoning: {params.reasoning}""",
     
     def synthesize_findings(self, state: Dict) -> Dict:
         """
-        Synthesize final answer - now uses Summarization Agent
+        Synthesize final answer - uses detailed summary from Summarization Agent
         
-        Instead of doing synthesis here, we delegate to Summarization Agent
-        for better formatting and insights
+        The Summarization Agent now uses LLM to create comprehensive summaries,
+        so we just extract and display its output
         """
-        # Get the summary from Summarization Agent
+        # Get the detailed summary from Summarization Agent
         summarization_data = state.get("findings", {}).get("Summarization_Agent", {})
         
-        if summarization_data and "raw_data" in summarization_data:
-            # Use the formatted summary from Summarization Agent
+        if summarization_data and "full_summary" in summarization_data:
+            # Use the detailed LLM-generated summary
+            final_answer = summarization_data["full_summary"]
+        elif summarization_data and "raw_data" in summarization_data:
+            # Fallback to raw_data if full_summary not available
             final_answer = summarization_data["raw_data"]
         else:
-            # Fallback to simple synthesis if Summarization Agent didn't run
+            # Final fallback to simple synthesis if Summarization Agent didn't run
             final_answer = self._simple_synthesis(state)
         
         state["final_answer"] = final_answer
+        
+        # Create a more prominent final answer display
+        divider = "=" * 80
         state["messages"].append(AIMessage(
-            content=f"\n{'='*80}\n**FINAL ANSWER**\n{'='*80}\n\n{final_answer}",
+            content=f"\n{divider}\n{'FINAL INVESTIGATION REPORT'.center(80)}\n{divider}\n\n{final_answer}\n\n{divider}",
             name=self.name
         ))
         
