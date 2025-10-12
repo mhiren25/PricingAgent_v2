@@ -41,16 +41,24 @@ class SupervisorAgent:
         }
     
     def analyze_query(self, state: Dict) -> Dict:
-        """Analyze query with structured output"""
+        """Analyze query with structured output - order_id optional based on intent"""
         
         analysis_prompt = f"""Analyze this financial trading query:
 
 **User Query:** {state['user_query']}
 
-Extract:
-- Intent (Knowledge/Data/Debug/Investigation/Monitoring/CodeAnalysis/Comparison)
-- Order IDs and dates
-- Brief reasoning
+**Instructions:**
+- Determine intent (Knowledge/Data/Debug/Investigation/Monitoring/CodeAnalysis/Comparison)
+- Extract order IDs and dates ONLY if present and relevant
+- For Knowledge queries (like "How does pricing work?"), NO order_id needed
+- For Data queries without specific order (like "Show system logs"), NO order_id needed
+- Only extract order_id if user explicitly mentions an order to investigate
+
+**Examples:**
+- "How does GOLD tier pricing work?" → intent=Knowledge, order_id=""
+- "Show system health" → intent=Monitoring, order_id=""
+- "Investigate order ABC123" → intent=Investigation, order_id="ABC123"
+- "Show logs for order ABC123" → intent=Data, order_id="ABC123"
 
 Provide structured output."""
         
@@ -61,13 +69,17 @@ Provide structured output."""
             state["messages"].append(AIMessage(
                 content=f"""**[Supervisor Analysis]**
 Intent: {params.intent}
-Order ID: {params.order_id or 'N/A'}
+Order ID: {params.order_id or 'Not required'}
+Comparison Order: {params.comparison_order_id or 'N/A'}
 Reasoning: {params.reasoning}""",
                 name=self.name
             ))
         except Exception as e:
-            # Fallback
-            state["parameters"] = QueryParameters(intent="Investigation")
+            # Fallback - create parameters with empty order_id
+            state["parameters"] = QueryParameters(
+                intent="Knowledge",
+                reasoning=f"Fallback due to error: {e}"
+            )
         
         return state
     
