@@ -240,8 +240,13 @@ def create_supervisor_graph():
             def db_router(state):
                 # Check if this DB call is right after Order Enricher (enrichment lookup)
                 sender = state.get("sender", "")
+                enrichment_just_completed = state.get("actual_order_id") and not state.get("enrichment_flow")
+                
                 if sender == "Order_Enricher_Agent":
                     # This is enrichment lookup, route to Splunk after
+                    return route_after_enrichment_db(state)
+                elif enrichment_just_completed and sender == "Database_Agent":
+                    # Just completed enrichment in previous DB call, now route based on intent
                     return route_after_enrichment_db(state)
                 else:
                     # Normal DB Agent flow (trade fields lookup, etc.)
