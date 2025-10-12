@@ -123,6 +123,10 @@ WHERE o.order_id = '{order_id}';
             # Store actual_order_id in state for subsequent agents
             state["actual_order_id"] = actual_order_id
             
+            # Clear enrichment_flow flag after successful enrichment
+            # This prevents subsequent DB calls from running in enrichment mode
+            state["enrichment_flow"] = False
+            
             # Update the parameters with actual order ID for downstream agents
             params = state.get("parameters")
             current_inv = state.get("current_investigation", "primary")
