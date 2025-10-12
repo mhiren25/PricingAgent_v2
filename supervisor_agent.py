@@ -1,5 +1,5 @@
 """
-Supervisor Agent - Orchestrator (Updated with Summarization Agent)
+Supervisor Agent - Orchestrator (Updated with Order Enricher and Summarization Agent)
 """
 
 from src.agents.base_agent import BaseAgent
@@ -10,7 +10,8 @@ from src.agents.debug_api_agent import DebugAPIAgent
 from src.agents.monitoring_agent import MonitoringAgent
 from src.agents.code_agent import CodeAgent
 from src.agents.comparison_agent import ComparisonAgent
-from src.agents.summarization_agent import SummarizationAgent  # NEW!
+from src.agents.summarization_agent import SummarizationAgent
+from src.agents.order_enricher_agent import OrderEnricherAgent  # NEW!
 from src.models.query_parameters import QueryParameters
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
@@ -28,7 +29,7 @@ class SupervisorAgent:
             temperature=0
         ).with_structured_output(QueryParameters)
         
-        # Initialize all specialist agents (including Summarization)
+        # Initialize all specialist agents (including Order Enricher and Summarization)
         self.agents = {
             "VectorDB_Agent": VectorDBAgent(),
             "Splunk_Agent": SplunkAgent(),
@@ -37,7 +38,8 @@ class SupervisorAgent:
             "Monitoring_Agent": MonitoringAgent(),
             "Code_Agent": CodeAgent(),
             "Comparison_Agent": ComparisonAgent(),
-            "Summarization_Agent": SummarizationAgent()  # NEW!
+            "Order_Enricher_Agent": OrderEnricherAgent(),  # NEW!
+            "Summarization_Agent": SummarizationAgent()
         }
     
     def analyze_query(self, state: Dict) -> Dict:
