@@ -1,652 +1,281 @@
 """
-API routes for Financial Trading Agent
-Fixed to work with updated QueryParameters and date handling
+Main workflow construction - includes Order Enricher and Summarization Agent
+Fixed flow with Order ID enrichment for D-prefixed orders
 """
 
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
-from fastapi.responses import StreamingResponse
-from typing import Optional, List, Dict, Any
-from datetime import datetime
-import asyncio
-import uuid
-import json
-
-from src.api.schemas import (
-    InvestigateRequest,
-    InvestigateResponse,
-    CompareRequest,
-    CompareResponse,
-    CodeAnalysisRequest,
-    CodeAnalysisResponse,
-    LogsRequest,
-    LogsResponse,
-    QueryResponse,
-    JobStatus,
-    StreamResponse
-)
-from src.api.main import get_agent_graph
+from langgraph.graph import StateGraph, END
+from src.agents.supervisor_agent import SupervisorAgent
 from src.models.state import AgentState
-from src.models.query_parameters import QueryParameters
-from src.utils.date_handler import DateHandler
-from config.settings import settings
-import logging
-
-logger = logging.getLogger(__name__)
-
-router = APIRouter()
-
-# In-memory job storage (use Redis in production)
-jobs: Dict[str, Dict[str, Any]] = {}
 
 
-def create_initial_state(query: str) -> AgentState:
-    """
-    Create initial agent state
+def create_supervisor_graph():
+    """Create optimized multi-agent workflow with order enrichment and conditional routing"""
     
-    Note: Parameters will be filled by Supervisor Agent based on query analysis
-    """
-    return {
-        "messages": [],
-        "user_query": query,
-        "parameters": QueryParameters(
-            intent="Investigation",
-            reasoning="Initial state - will be updated by Supervisor"
-        ),
-        "investigation_step": 0,
-        "findings": {},
-        "comparison_findings": {},
-        "final_answer": "",
-        "sender": "",
-        "current_investigation": "primary",
-        "error_log": [],
-        # Enrichment fields
-        "aaa_order_id": None,
-        "enrichment_flow": False,
-        "actual_order_id": None
-    }
-
-
-def format_response(result: AgentState) -> Dict[str, Any]:
-    """Format agent result for API response"""
-    params = result.get("parameters")
+    supervisor = SupervisorAgent()
+    workflow = StateGraph(AgentState)
     
-    agents_used = list(set(
-        msg.name for msg in result.get("messages", [])
-        if hasattr(msg, 'name') and msg.name and msg.name != "Supervisor"
-    ))
+    # Add supervisor and synthesis nodes
+    workflow.add_node("supervisor", lambda s: supervisor.analyze_query(s))
+    workflow.add_node("synthesize", lambda s: supervisor.synthesize_findings(s))
     
-    return {
-        "answer": result.get("final_answer", ""),
-        "intent": params.intent if params else "Unknown",
-        "order_id": params.order_id if params else None,
-        "date": params.date if params else None,
-        "comparison_order_id": params.comparison_order_id if params else None,
-        "comparison_date": params.comparison_date if params else None,
-        "enriched_order_id": result.get("actual_order_id"),
-        "agents_used": agents_used,
-        "total_messages": len(result.get("messages", [])),
-        "errors": result.get("error_log", []),
-        "findings": {
-            "primary": result.get("findings", {}),
-            "comparison": result.get("comparison_findings", {})
-        },
-        "timestamp": datetime.now().isoformat()
-    }
-
-
-# ============================================================================
-# QUERY ENDPOINTS
-# ============================================================================
-
-@router.post("/query", response_model=QueryResponse)
-async def query(
-    query: str,
-    order_id: Optional[str] = None,
-    date: Optional[str] = None,
-    agent = Depends(get_agent_graph)
-):
-    """
-    Generic query endpoint - automatically routes to appropriate agents
+    # Add all agent nodes dynamically (including Order Enricher and Summarization)
+    for agent_name, agent_instance in supervisor.agents.items():
+        node_name = agent_name.lower().replace("_", "")
+        
+        def make_node(agent):
+            def node(state):
+                result = agent.execute(state)
+                result["sender"] = agent.name
+                result["investigation_step"] = state.get("investigation_step", 0) + 1
+                return result
+            return node
+        
+        workflow.add_node(node_name, make_node(agent_instance))
     
-    Examples:
-    - "How does pricing work?" → Knowledge
-    - "Show logs for order ABC123 on 2025-01-15" → Logs
-    - "Investigate order XYZ789" → Investigation
-    - "Investigate order D12.345.678 on 12/10/2025" → Investigation with enrichment
-    """
-    try:
-        logger.info(f"Received query: {query}")
+    # Routing functions
+    def route_from_supervisor(state):
+        """Route from supervisor - check if order enrichment needed"""
+        params = state.get("parameters")
+        if not params:
+            return "synthesize"
         
-        # Build enhanced query with provided order_id and date
-        enhanced_query = query
-        if order_id and order_id not in query:
-            enhanced_query += f" for order {order_id}"
-        if date and date not in query:
-            enhanced_query += f" on {date}"
+        intent = params.intent
+        order_id = params.order_id if hasattr(params, 'order_id') else None
         
-        state = create_initial_state(enhanced_query)
-        result = agent.invoke(state)
+        # Initialize enrichment fields to ensure they exist
+        if "aaa_order_id" not in state:
+            state["aaa_order_id"] = None
+        if "enrichment_flow" not in state:
+            state["enrichment_flow"] = False
+        if "actual_order_id" not in state:
+            state["actual_order_id"] = None
         
-        response = format_response(result)
+        # Check if order enrichment is needed
+        # Only for Investigation/Comparison intents that will use Splunk
+        if intent in ["Investigation", "Comparison", "Data"]:
+            if order_id and needs_enrichment(order_id):
+                # Order needs enrichment - route to Order Enricher
+                # Note: enrichment_flow will be set by Order Enricher Agent
+                return "orderenricheragent"
+            else:
+                # Order doesn't need enrichment, ensure flags are False/None
+                state["aaa_order_id"] = None
+                state["enrichment_flow"] = False
         
-        return QueryResponse(
-            success=True,
-            query=query,
-            **response
-        )
-        
-    except Exception as e:
-        logger.error(f"Query failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/investigate", response_model=InvestigateResponse)
-async def investigate(
-    request: InvestigateRequest,
-    agent = Depends(get_agent_graph)
-):
-    """
-    Investigate a specific order to find pricing issues
+        # Normal routing for non-enrichment cases
+        if intent == "Knowledge":
+            return "vectordbagent"
+        elif intent == "Data":
+            return "splunkagent"
+        elif intent == "Monitoring":
+            return "monitoringagent"
+        elif intent == "CodeAnalysis":
+            return "codeagent" if not order_id else "databaseagent"
+        elif intent in ["Investigation", "Comparison"]:
+            return "splunkagent"
+        return "splunkagent"
     
-    Executes: Splunk → Database → DebugAPI → Analysis
+    def needs_enrichment(order_id):
+        """Check if order ID needs enrichment (D-prefix with 9 chars after removing dots)"""
+        if not order_id:
+            return False
+        
+        # Remove dots
+        clean_id = order_id.replace(".", "")
+        
+        # Check if starts with D and has exactly 9 characters
+        return clean_id.startswith("D") and len(clean_id) == 9
     
-    Supports:
-    - Standard order IDs (ORD123456)
-    - D-prefix orders (D12.345.678) - automatically enriched
-    - Various date formats (will be normalized to yyyy-mm-dd)
-    """
-    try:
-        logger.info(f"Investigating order: {request.order_id}")
-        
-        # Build query string - Supervisor will parse and normalize
-        query = f"Investigate order {request.order_id}"
-        if request.date:
-            query += f" on {request.date}"  # Date will be normalized by QueryParameters
-        if request.reason:
-            query += f" - {request.reason}"
-        
-        state = create_initial_state(query)
-        result = agent.invoke(state)
-        
-        response = format_response(result)
-        
-        return InvestigateResponse(
-            success=True,
-            order_id=request.order_id,
-            date=request.date,
-            **response
-        )
-        
-    except Exception as e:
-        logger.error(f"Investigation failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/compare", response_model=CompareResponse)
-async def compare_orders(
-    request: CompareRequest,
-    agent = Depends(get_agent_graph)
-):
-    """
-    Compare two orders to find pricing differences
+    def route_from_order_enricher(state):
+        """Route after Order Enricher - always go to DB Agent to get actual order ID"""
+        return "databaseagent"
     
-    Executes both investigations in parallel, then performs comparison
+    def route_after_enrichment_db(state):
+        """Route after DB Agent completes enrichment - continue to Splunk"""
+        # After enrichment DB call, always proceed to Splunk with actual order ID
+        # enrichment_flow flag is already cleared by DB Agent
+        return "splunkagent"
     
-    Supports:
-    - Mix of standard and D-prefix orders
-    - Different dates for each order
-    - Automatic date normalization
-    """
-    try:
-        logger.info(f"Comparing orders: {request.primary_order_id} vs {request.comparison_order_id}")
+    def route_next_agent(state):
+        """
+        Pure routing function - determines next agent
+        Handles conditional Splunk routing and enrichment flow
+        """
+        sender = state.get("sender", "")
+        params = state.get("parameters")
+        intent = params.intent if params else "Investigation"
+        current_inv = state.get("current_investigation", "primary")
         
-        # Build comparison query - Supervisor will handle date normalization
-        query = f"Compare order {request.primary_order_id}"
-        if request.primary_date:
-            query += f" from {request.primary_date}"
-        query += f" with order {request.comparison_order_id}"
-        if request.comparison_date:
-            query += f" from {request.comparison_date}"
-        if request.reason:
-            query += f" - {request.reason}"
+        # If Summarization Agent just ran, go to synthesis
+        if sender == "Summarization_Agent":
+            return "synthesize"
         
-        state = create_initial_state(query)
-        result = agent.invoke(state)
+        # Single agent paths - go to summarization before synthesis
+        if intent in ["Knowledge", "Data", "Monitoring"]:
+            return "summarizationagent"
         
-        response = format_response(result)
+        # Code analysis
+        if intent == "CodeAnalysis":
+            if sender == "Database_Agent":
+                return "codeagent"
+            elif sender == "Code_Agent":
+                return "summarizationagent"
+            return "summarizationagent"
         
-        return CompareResponse(
-            success=True,
-            primary_order_id=request.primary_order_id,
-            comparison_order_id=request.comparison_order_id,
-            differences=response.get("answer", ""),
-            **response
-        )
-        
-    except Exception as e:
-        logger.error(f"Comparison failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/code/analyze", response_model=CodeAnalysisResponse)
-async def analyze_code(
-    request: CodeAnalysisRequest,
-    agent = Depends(get_agent_graph)
-):
-    """
-    Analyze Java/Spring code
-    
-    Can explain implementations, trace execution, show configurations
-    """
-    try:
-        logger.info(f"Code analysis: {request.query}")
-        
-        query = request.query
-        if request.order_id:
-            query += f" for order {request.order_id}"
-        if request.class_name:
-            query += f" in class {request.class_name}"
-        if request.method_name:
-            query += f" method {request.method_name}"
-        
-        state = create_initial_state(query)
-        result = agent.invoke(state)
-        
-        response = format_response(result)
-        
-        return CodeAnalysisResponse(
-            success=True,
-            query=request.query,
-            **response
-        )
-        
-    except Exception as e:
-        logger.error(f"Code analysis failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/logs", response_model=LogsResponse)
-async def get_logs(
-    request: LogsRequest,
-    agent = Depends(get_agent_graph)
-):
-    """
-    Retrieve and analyze logs for specific order
-    
-    Supports:
-    - Standard and D-prefix orders
-    - Various date formats
-    """
-    try:
-        logger.info(f"Fetching logs for: {request.order_id}")
-        
-        query = f"Show me logs for order {request.order_id}"
-        if request.date:
-            query += f" on {request.date}"  # Will be normalized
-        
-        state = create_initial_state(query)
-        result = agent.invoke(state)
-        
-        response = format_response(result)
-        
-        return LogsResponse(
-            success=True,
-            order_id=request.order_id,
-            date=request.date,
-            **response
-        )
-        
-    except Exception as e:
-        logger.error(f"Log retrieval failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ============================================================================
-# ASYNC/BACKGROUND JOB ENDPOINTS
-# ============================================================================
-
-@router.post("/investigate/async")
-async def investigate_async(
-    request: InvestigateRequest,
-    background_tasks: BackgroundTasks,
-    agent = Depends(get_agent_graph)
-):
-    """
-    Start investigation as background job
-    Returns job_id to check status later
-    """
-    job_id = str(uuid.uuid4())
-    
-    jobs[job_id] = {
-        "status": "pending",
-        "created_at": datetime.now().isoformat(),
-        "request": request.dict(),
-        "result": None,
-        "error": None
-    }
-    
-    async def run_investigation():
-        try:
-            jobs[job_id]["status"] = "running"
-            jobs[job_id]["started_at"] = datetime.now().isoformat()
+        # Comparison flow - investigate BOTH orders completely
+        if intent == "Comparison":
+            if current_inv == "primary":
+                # Primary order investigation
+                if sender == "Splunk_Agent":
+                    # Check if Splunk found logs
+                    splunk_findings = state.get("findings", {}).get("Splunk_Agent", {})
+                    if splunk_findings.get("logs_found", False):
+                        # Logs found, skip DB and DebugAPI
+                        # Switch to comparison order investigation
+                        state["current_investigation"] = "comparison"
+                        state["investigation_step"] = 0
+                        
+                        # Reset enrichment flags for comparison order
+                        state["aaa_order_id"] = None
+                        state["enrichment_flow"] = False
+                        state["actual_order_id"] = None
+                        
+                        # Check if comparison order needs enrichment
+                        comparison_order = params.comparison_order_id if hasattr(params, 'comparison_order_id') else None
+                        if comparison_order and needs_enrichment(comparison_order):
+                            # Don't set enrichment_flow here - let Order Enricher do it
+                            return "orderenricheragent"
+                        return "splunkagent"
+                    else:
+                        # No logs, proceed to DB
+                        return "databaseagent"
+                        
+                elif sender == "Database_Agent":
+                    return "debugapiagent"
+                    
+                elif sender == "DebugAPI_Agent":
+                    # Primary complete, switch to comparison order
+                    state["current_investigation"] = "comparison"
+                    state["investigation_step"] = 0
+                    
+                    # Reset enrichment flags for comparison order
+                    state["aaa_order_id"] = None
+                    state["enrichment_flow"] = False
+                    state["actual_order_id"] = None
+                    
+                    # Check if comparison order needs enrichment
+                    comparison_order = params.comparison_order_id if hasattr(params, 'comparison_order_id') else None
+                    if comparison_order and needs_enrichment(comparison_order):
+                        # Don't set enrichment_flow here - let Order Enricher do it
+                        return "orderenricheragent"
+                    return "splunkagent"
+                    
+            elif current_inv == "comparison":
+                # Comparison order investigation
+                if sender == "Splunk_Agent":
+                    # Check if Splunk found logs for comparison order
+                    splunk_findings = state.get("findings", {}).get("Splunk_Agent", {})
+                    if splunk_findings.get("logs_found", False):
+                        # Logs found, skip DB and DebugAPI, go to comparison
+                        return "comparisonagent"
+                    else:
+                        # No logs, proceed to DB
+                        return "databaseagent"
+                        
+                elif sender == "Database_Agent":
+                    return "debugapiagent"
+                    
+                elif sender == "DebugAPI_Agent":
+                    # Both orders investigated, now compare
+                    return "comparisonagent"
             
-            query = f"Investigate order {request.order_id}"
-            if request.date:
-                query += f" on {request.date}"
-            if request.reason:
-                query += f" - {request.reason}"
-            
-            state = create_initial_state(query)
-            result = agent.invoke(state)
-            
-            jobs[job_id]["status"] = "completed"
-            jobs[job_id]["completed_at"] = datetime.now().isoformat()
-            jobs[job_id]["result"] = format_response(result)
-            
-        except Exception as e:
-            logger.error(f"Background investigation failed: {e}", exc_info=True)
-            jobs[job_id]["status"] = "failed"
-            jobs[job_id]["error"] = str(e)
-            jobs[job_id]["failed_at"] = datetime.now().isoformat()
-    
-    background_tasks.add_task(run_investigation)
-    
-    return {
-        "job_id": job_id,
-        "status": "pending",
-        "message": "Investigation started in background",
-        "status_url": f"/api/v1/jobs/{job_id}"
-    }
-
-
-@router.get("/jobs/{job_id}", response_model=JobStatus)
-async def get_job_status(job_id: str):
-    """Check status of background job"""
-    if job_id not in jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    job = jobs[job_id]
-    
-    return JobStatus(
-        job_id=job_id,
-        status=job["status"],
-        created_at=job["created_at"],
-        started_at=job.get("started_at"),
-        completed_at=job.get("completed_at"),
-        result=job.get("result"),
-        error=job.get("error")
-    )
-
-
-# ============================================================================
-# MONITORING ENDPOINTS
-# ============================================================================
-
-@router.get("/monitoring/health")
-async def monitoring_health(agent = Depends(get_agent_graph)):
-    """Get system health from monitoring agent"""
-    try:
-        query = "What's the current health of the pricing service?"
-        state = create_initial_state(query)
-        result = agent.invoke(state)
+            # After comparison analysis
+            if sender == "Comparison_Agent":
+                return "summarizationagent"
         
-        return {
-            "status": "healthy",
-            "metrics": result.get("final_answer", ""),
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        return {
-            "status": "unhealthy",
-            "error": str(e),
-            "timestamp": datetime.now().isoformat()
-        }
-
-
-# ============================================================================
-# STREAMING ENDPOINT (Advanced)
-# ============================================================================
-
-@router.post("/query/stream")
-async def query_stream(
-    query: str,
-    order_id: Optional[str] = None,
-    date: Optional[str] = None,
-    agent = Depends(get_agent_graph)
-):
-    """
-    Stream agent responses in real-time (Server-Sent Events)
-    """
-    async def event_generator():
-        try:
-            yield f"data: {json.dumps({'type': 'start', 'message': 'Investigation started'})}\n\n"
-            
-            enhanced_query = query
-            if order_id:
-                enhanced_query += f" for order {order_id}"
-            if date:
-                enhanced_query += f" on {date}"
-            
-            state = create_initial_state(enhanced_query)
-            
-            # TODO: Implement streaming from LangGraph
-            # This is a placeholder - actual streaming requires LangGraph stream support
-            result = agent.invoke(state)
-            
-            # Stream each agent's output
-            for msg in result.get("messages", []):
-                if hasattr(msg, 'name') and msg.name:
-                    event = {
-                        "type": "agent_message",
-                        "agent": msg.name,
-                        "content": msg.content[:200]  # Truncate for streaming
-                    }
-                    yield f"data: {json.dumps(event)}\n\n"
-                    await asyncio.sleep(0.1)  # Small delay
-            
-            # Final result
-            final_event = {
-                "type": "complete",
-                "answer": result.get("final_answer", ""),
-                "timestamp": datetime.now().isoformat()
-            }
-            yield f"data: {json.dumps(final_event)}\n\n"
-            
-        except Exception as e:
-            error_event = {
-                "type": "error",
-                "error": str(e)
-            }
-            yield f"data: {json.dumps(error_event)}\n\n"
+        # Investigation flow (single order) - conditional routing based on Splunk results
+        if intent == "Investigation":
+            if sender == "Splunk_Agent":
+                # Check if Splunk found logs
+                splunk_findings = state.get("findings", {}).get("Splunk_Agent", {})
+                if splunk_findings.get("logs_found", False):
+                    # Logs found in Splunk, skip DB and DebugAPI, go straight to Summarization
+                    return "summarizationagent"
+                else:
+                    # No logs found, proceed to Database Agent
+                    return "databaseagent"
+                    
+            elif sender == "Database_Agent":
+                return "debugapiagent"
+                
+            elif sender == "DebugAPI_Agent":
+                return "summarizationagent"
+        
+        return "summarizationagent"
     
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream"
-    )
-
-
-# ============================================================================
-# UTILITY ENDPOINTS
-# ============================================================================
-
-@router.get("/agents")
-async def list_agents():
-    """List all available agents"""
-    return {
-        "agents": [
-            {
-                "name": "Order_Enricher_Agent",
-                "purpose": "D-prefix order ID enrichment",
-                "use_case": "Automatically enriches D12.345.678 to actual order ID",
-                "trigger": "Order starts with D and has 9 characters"
-            },
-            {
-                "name": "VectorDB_Agent",
-                "purpose": "Knowledge & documentation retrieval",
-                "use_case": "How does pricing work?"
-            },
-            {
-                "name": "Splunk_Agent",
-                "purpose": "Log analysis & forensics",
-                "use_case": "Show logs for order ABC123"
-            },
-            {
-                "name": "Database_Agent",
-                "purpose": "Oracle DB queries & configuration",
-                "use_case": "Get order details, enrich D-prefix orders"
-            },
-            {
-                "name": "DebugAPI_Agent",
-                "purpose": "Order simulation & testing",
-                "use_case": "Simulate pricing calculation"
-            },
-            {
-                "name": "Monitoring_Agent",
-                "purpose": "System health & metrics",
-                "use_case": "System health status"
-            },
-            {
-                "name": "Code_Agent",
-                "purpose": "Java/Spring code analysis",
-                "use_case": "Explain pricing code"
-            },
-            {
-                "name": "Comparison_Agent",
-                "purpose": "Side-by-side order comparison",
-                "use_case": "Compare two orders"
-            },
-            {
-                "name": "Summarization_Agent",
-                "purpose": "LLM-powered comprehensive summaries",
-                "use_case": "Generate executive-ready investigation reports"
-            }
-        ]
-    }
-
-
-@router.get("/date/normalize")
-async def normalize_date(date_input: str):
-    """
-    Normalize a date string to yyyy-mm-dd format
+    # Set entry point
+    workflow.set_entry_point("supervisor")
     
-    Useful for testing date normalization before sending queries
-    """
-    try:
-        normalized = DateHandler.normalize_date(date_input)
-        return {
-            "input": date_input,
-            "normalized": normalized,
-            "current_date": DateHandler.get_current_date(),
-            "is_valid": DateHandler.validate_date(normalized)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Date normalization failed: {str(e)}")
-
-
-@router.get("/date/current")
-async def get_current_date():
-    """Get current date in yyyy-mm-dd format"""
-    return {
-        "current_date": DateHandler.get_current_date(),
-        "timestamp": datetime.now().isoformat()
-    }
-
-
-@router.get("/examples")
-async def get_query_examples():
-    """Get example queries for different use cases"""
-    return {
-        "examples": {
-            "knowledge": [
-                "How does client pricing work for GOLD tier clients?",
-                "Explain the pricing calculation algorithm"
-            ],
-            "investigation": [
-                "Investigate order ABC123 from 2025-01-15",
-                "Investigate order D12.345.678 on 12/10/2025",
-                "Why did order XYZ789 fail?",
-                "Show me what happened to order ABC123 yesterday"
-            ],
-            "logs": [
-                "Show me logs for order ABC123 on 2025-01-15",
-                "Get logs for order D11111111",
-                "Show system logs from yesterday"
-            ],
-            "comparison": [
-                "Compare order ABC123 with DEF456",
-                "Compare order D11111111 from yesterday with ORD222222",
-                "Why do orders ABC123 and XYZ789 have different prices?",
-                "Compare pricing for ABC123 on 2025-01-10 vs 2025-01-15"
-            ],
-            "code_analysis": [
-                "How does the pricing calculation work in the Java code?",
-                "Show me the PricingEngine implementation",
-                "Explain tier discount logic in the code"
-            ],
-            "monitoring": [
-                "What's the current health of the pricing service?",
-                "Show system metrics",
-                "Check service status"
-            ],
-            "enrichment": [
-                "Investigate order D12.345.678",
-                "Compare D11111111 with D22222222",
-                "Show logs for D99999999 on 2025-10-12"
-            ],
-            "date_formats": [
-                "Investigate order ABC123 on 2025-10-12",
-                "Investigate order ABC123 on 12/10/2025",
-                "Investigate order ABC123 on 12-10-2025",
-                "Investigate order ABC123 from yesterday",
-                "Investigate order ABC123 from today"
-            ]
-        }
-    }
-
-
-@router.get("/health")
-async def health_check():
-    """Basic health check endpoint"""
-    return {
-        "status": "healthy",
-        "service": "Financial Trading Agent API",
-        "version": "2.0.0",
-        "features": {
-            "order_enrichment": True,
-            "date_normalization": True,
-            "llm_summarization": True,
-            "comparison": True,
-            "code_analysis": True
-        },
-        "timestamp": datetime.now().isoformat()
-    }
-
-
-@router.get("/")
-async def api_root():
-    """API root with documentation links"""
-    return {
-        "message": "Financial Trading Agent API",
-        "version": "2.0.0",
-        "documentation": "/docs",
-        "endpoints": {
-            "query": "/api/v1/query",
-            "investigate": "/api/v1/investigate",
-            "compare": "/api/v1/compare",
-            "logs": "/api/v1/logs",
-            "code_analysis": "/api/v1/code/analyze",
-            "health": "/api/v1/health",
-            "agents": "/api/v1/agents",
-            "examples": "/api/v1/examples",
-            "date_normalize": "/api/v1/date/normalize"
-        },
-        "features": [
-            "Automatic D-prefix order enrichment",
-            "Multi-format date normalization",
-            "LLM-powered summaries",
-            "Side-by-side order comparison",
-            "Code analysis",
-            "Real-time log analysis"
-        ]
-    }
+    # Supervisor routing - includes order enricher option
+    workflow.add_conditional_edges("supervisor", route_from_supervisor, {
+        "vectordbagent": "vectordbagent",
+        "splunkagent": "splunkagent",
+        "databaseagent": "databaseagent",
+        "debugapiagent": "debugapiagent",
+        "monitoringagent": "monitoringagent",
+        "codeagent": "codeagent",
+        "orderenricheragent": "orderenricheragent",
+        "synthesize": "synthesize"
+    })
+    
+    # Order Enricher always routes to DB Agent
+    workflow.add_edge("orderenricheragent", "databaseagent")
+    
+    # All agents route through the same logic
+    for agent_name in supervisor.agents.keys():
+        node_name = agent_name.lower().replace("_", "")
+        
+        # Special handling for Database Agent when coming from Order Enricher
+        if node_name == "databaseagent":
+            def db_router(state):
+                # Check if this DB call is right after Order Enricher (enrichment lookup)
+                sender = state.get("sender", "")
+                if sender == "Order_Enricher_Agent":
+                    # This is enrichment lookup, route to Splunk after
+                    return route_after_enrichment_db(state)
+                else:
+                    # Normal DB Agent flow (trade fields lookup, etc.)
+                    return route_next_agent(state)
+            
+            workflow.add_conditional_edges(
+                node_name,
+                db_router,
+                {
+                    "splunkagent": "splunkagent",
+                    "databaseagent": "databaseagent",
+                    "debugapiagent": "debugapiagent",
+                    "codeagent": "codeagent",
+                    "comparisonagent": "comparisonagent",
+                    "summarizationagent": "summarizationagent",
+                    "synthesize": "synthesize"
+                }
+            )
+        else:
+            workflow.add_conditional_edges(
+                node_name,
+                route_next_agent,
+                {
+                    "splunkagent": "splunkagent",
+                    "databaseagent": "databaseagent",
+                    "debugapiagent": "debugapiagent",
+                    "codeagent": "codeagent",
+                    "comparisonagent": "comparisonagent",
+                    "orderenricheragent": "orderenricheragent",
+                    "summarizationagent": "summarizationagent",
+                    "synthesize": "synthesize"
+                }
+            )
+    
+    workflow.add_edge("synthesize", END)
+    
+    return workflow.compile()
