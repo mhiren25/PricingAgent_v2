@@ -26,7 +26,7 @@ class AgentState(TypedDict):
     
     # Order enrichment fields (NEW)
     aaa_order_id: Optional[str]  # Cleaned D-prefixed order ID for DB lookup (None if not applicable)
-    enrichment_flow: bool  # Flag indicating if this is an enrichment workflow
+    enrichment_flow: Optional[bool]  # Flag indicating if this is an enrichment workflow
     actual_order_id: Optional[str]  # Actual order ID retrieved from DB after enrichment
     
     # Output
