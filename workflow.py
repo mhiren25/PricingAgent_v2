@@ -18,6 +18,34 @@ def create_supervisor_graph():
     workflow.add_node("supervisor", lambda s: supervisor.analyze_query(s))
     workflow.add_node("synthesize", lambda s: supervisor.synthesize_findings(s))
     
+    # Add transition nodes for comparison flow
+    def switch_to_comparison(state):
+        """Transition node: Switch from primary to comparison investigation"""
+        print("[TRANSITION] Switching to comparison phase")
+        state["current_investigation"] = "comparison"
+        state["investigation_step"] = 0
+        state["aaa_order_id"] = None
+        state["enrichment_flow"] = False
+        state["actual_order_id"] = None
+        return state
+    
+    def switch_to_comparison_enricher(state):
+        """Transition node: Switch to comparison and prepare for enrichment"""
+        print("[TRANSITION] Switching to comparison phase (with enrichment)")
+        state["current_investigation"] = "comparison"
+        state["investigation_step"] = 0
+        state["aaa_order_id"] = None
+        state["enrichment_flow"] = False
+        state["actual_order_id"] = None
+        return state
+    
+    workflow.add_node("switch_to_comparison", switch_to_comparison)
+    workflow.add_node("switch_to_comparison_enricher", switch_to_comparison_enricher)
+    
+    # Transition nodes always route to next agent
+    workflow.add_edge("switch_to_comparison", "splunkagent")
+    workflow.add_edge("switch_to_comparison_enricher", "orderenricheragent")
+    
     # Add all agent nodes dynamically (including Order Enricher and Summarization)
     for agent_name, agent_instance in supervisor.agents.items():
         node_name = agent_name.lower().replace("_", "")
@@ -262,7 +290,9 @@ def create_supervisor_graph():
                     "codeagent": "codeagent",
                     "comparisonagent": "comparisonagent",
                     "summarizationagent": "summarizationagent",
-                    "synthesize": "synthesize"
+                    "synthesize": "synthesize",
+                    "switch_to_comparison": "switch_to_comparison",
+                    "switch_to_comparison_enricher": "switch_to_comparison_enricher"
                 }
             )
         else:
@@ -277,7 +307,9 @@ def create_supervisor_graph():
                     "comparisonagent": "comparisonagent",
                     "orderenricheragent": "orderenricheragent",
                     "summarizationagent": "summarizationagent",
-                    "synthesize": "synthesize"
+                    "synthesize": "synthesize",
+                    "switch_to_comparison": "switch_to_comparison",
+                    "switch_to_comparison_enricher": "switch_to_comparison_enricher"
                 }
             )
     
