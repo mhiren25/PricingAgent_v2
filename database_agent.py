@@ -106,6 +106,9 @@ WHERE o.order_id = '{order_id}';
         # Check if this is an enrichment flow
         enrichment_flow = state.get("enrichment_flow", False)
         
+        # DEBUG logging
+        print(f"\n[DB_AGENT] enrichment_flow={enrichment_flow}, aaa_order_id={state.get('aaa_order_id')}, actual_order_id={state.get('actual_order_id')}")
+        
         if enrichment_flow:
             # ENRICHMENT MODE: Lookup actual order ID
             aaa_order_id = state.get("aaa_order_id")
@@ -115,6 +118,8 @@ WHERE o.order_id = '{order_id}';
                     "error": "Missing aaa_order_id in enrichment flow",
                     "summary": "⚠️ AAA Order ID required for enrichment lookup"
                 }
+            
+            print(f"[DB_AGENT] ENRICHMENT MODE: Looking up {aaa_order_id}")
             
             # Lookup actual order ID
             lookup_result = self.lookup_actual_order_id.invoke({"aaa_order_id": aaa_order_id})
@@ -126,6 +131,8 @@ WHERE o.order_id = '{order_id}';
             # Clear enrichment_flow flag after successful enrichment
             # This prevents subsequent DB calls from running in enrichment mode
             state["enrichment_flow"] = False
+            
+            print(f"[DB_AGENT] Enrichment complete: {aaa_order_id} -> {actual_order_id}, enrichment_flow set to False")
             
             # Update the parameters with actual order ID for downstream agents
             params = state.get("parameters")
@@ -166,6 +173,8 @@ WHERE o.order_id = '{order_id}';
             # Check if we should use actual_order_id from enrichment
             if not order_id and state.get("actual_order_id"):
                 order_id = state.get("actual_order_id")
+            
+            print(f"[DB_AGENT] NORMAL MODE: Querying trade data for {order_id}")
             
             if not order_id:
                 return {
