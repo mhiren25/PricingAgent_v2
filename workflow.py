@@ -42,16 +42,25 @@ def create_supervisor_graph():
         intent = params.intent
         order_id = params.order_id if hasattr(params, 'order_id') else None
         
+        # Initialize enrichment fields to ensure they exist
+        if "aaa_order_id" not in state:
+            state["aaa_order_id"] = None
+        if "enrichment_flow" not in state:
+            state["enrichment_flow"] = False
+        if "actual_order_id" not in state:
+            state["actual_order_id"] = None
+        
         # Check if order enrichment is needed
         # Only for Investigation/Comparison intents that will use Splunk
         if intent in ["Investigation", "Comparison", "Data"]:
             if order_id and needs_enrichment(order_id):
-                # Set enrichment flag and route to Order Enricher first
-                state["enrichment_flow"] = True
+                # Order needs enrichment - route to Order Enricher
+                # Note: enrichment_flow will be set by Order Enricher Agent
                 return "orderenricheragent"
             else:
-                # Order doesn't need enrichment, set aaa_order_id as None
+                # Order doesn't need enrichment, ensure flags are False/None
                 state["aaa_order_id"] = None
+                state["enrichment_flow"] = False
         
         # Normal routing for non-enrichment cases
         if intent == "Knowledge":
@@ -82,19 +91,10 @@ def create_supervisor_graph():
         return "databaseagent"
     
     def route_after_enrichment_db(state):
-        """Route after DB Agent in enrichment flow - continue with normal flow"""
-        sender = state.get("sender", "")
-        params = state.get("parameters")
-        intent = params.intent if params else "Investigation"
-        
-        # After enrichment DB call, proceed to Splunk with actual order ID
-        if state.get("enrichment_flow", False):
-            # Clear enrichment flag and continue normal investigation
-            state["enrichment_flow"] = False
-            return "splunkagent"
-        
-        # Normal DB Agent flow (non-enrichment)
-        return route_next_agent(state)
+        """Route after DB Agent completes enrichment - continue to Splunk"""
+        # After enrichment DB call, always proceed to Splunk with actual order ID
+        # enrichment_flow flag is already cleared by DB Agent
+        return "splunkagent"
     
     def route_next_agent(state):
         """
@@ -135,9 +135,15 @@ def create_supervisor_graph():
                         state["current_investigation"] = "comparison"
                         state["investigation_step"] = 0
                         
+                        # Reset enrichment flags for comparison order
+                        state["aaa_order_id"] = None
+                        state["enrichment_flow"] = False
+                        state["actual_order_id"] = None
+                        
                         # Check if comparison order needs enrichment
                         comparison_order = params.comparison_order_id if hasattr(params, 'comparison_order_id') else None
                         if comparison_order and needs_enrichment(comparison_order):
+                            # Don't set enrichment_flow here - let Order Enricher do it
                             return "orderenricheragent"
                         return "splunkagent"
                     else:
@@ -152,9 +158,15 @@ def create_supervisor_graph():
                     state["current_investigation"] = "comparison"
                     state["investigation_step"] = 0
                     
+                    # Reset enrichment flags for comparison order
+                    state["aaa_order_id"] = None
+                    state["enrichment_flow"] = False
+                    state["actual_order_id"] = None
+                    
                     # Check if comparison order needs enrichment
                     comparison_order = params.comparison_order_id if hasattr(params, 'comparison_order_id') else None
                     if comparison_order and needs_enrichment(comparison_order):
+                        # Don't set enrichment_flow here - let Order Enricher do it
                         return "orderenricheragent"
                     return "splunkagent"
                     
@@ -223,11 +235,26 @@ def create_supervisor_graph():
     for agent_name in supervisor.agents.keys():
         node_name = agent_name.lower().replace("_", "")
         
-        # Special handling for Database Agent to support enrichment flow
+        # Special handling for Database Agent when coming from Order Enricher
         if node_name == "databaseagent":
+            def db_router(state):
+                # Check if this DB call is right after Order Enricher (enrichment lookup)
+                sender = state.get("sender", "")
+                enrichment_just_completed = state.get("actual_order_id") and not state.get("enrichment_flow")
+                
+                if sender == "Order_Enricher_Agent":
+                    # This is enrichment lookup, route to Splunk after
+                    return route_after_enrichment_db(state)
+                elif enrichment_just_completed and sender == "Database_Agent":
+                    # Just completed enrichment in previous DB call, now route based on intent
+                    return route_after_enrichment_db(state)
+                else:
+                    # Normal DB Agent flow (trade fields lookup, etc.)
+                    return route_next_agent(state)
+            
             workflow.add_conditional_edges(
                 node_name,
-                lambda state: route_after_enrichment_db(state) if state.get("enrichment_flow") else route_next_agent(state),
+                db_router,
                 {
                     "splunkagent": "splunkagent",
                     "databaseagent": "databaseagent",
