@@ -105,6 +105,8 @@ def create_supervisor_graph():
         params = state.get("parameters")
         intent = params.intent if params else "Investigation"
         current_inv = state.get("current_investigation", "primary")
+
+        print(f"\n[ROUTING] Sender: {sender}, Phase: {current_inv}, Intent: {intent}")
         
         # If Summarization Agent just ran, go to synthesis
         if sender == "Summarization_Agent":
@@ -127,6 +129,7 @@ def create_supervisor_graph():
             if current_inv == "primary":
                 # Primary order investigation
                 if sender == "Splunk_Agent":
+                    print(f"[PHASE SWITCH] primary → comparison")
                     # Check if Splunk found logs
                     splunk_findings = state.get("findings", {}).get("Splunk_Agent", {})
                     if splunk_findings.get("logs_found", False):
