@@ -113,9 +113,15 @@ Expected format: D-prefix with 9 characters total (e.g., D12345678 or D12.345.67
                 "original_order_id": original_order_id
             }
         
-        # Store the cleaned order ID as aaa_order_id
-        state["aaa_order_id"] = clean_order_id
-        state["enrichment_flow"] = True  # Set flag for DB Agent
+        # Store the cleaned order ID in appropriate state field based on phase
+        if current_inv == "comparison":
+            state["comparison_aaa_order_id"] = clean_order_id
+            state["comparison_enrichment_flow"] = True
+            print(f"[ORDER_ENRICHER] Comparison: comparison_aaa_order_id={clean_order_id}, comparison_enrichment_flow=True")
+        else:
+            state["aaa_order_id"] = clean_order_id
+            state["enrichment_flow"] = True
+            print(f"[ORDER_ENRICHER] Primary: aaa_order_id={clean_order_id}, enrichment_flow=True")
         
         # Date info for display
         date_info = f"\n**Date:** `{date}`" if date else ""
