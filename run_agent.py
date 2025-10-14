@@ -46,10 +46,14 @@ def create_initial_state(query: str) -> AgentState:
         "sender": "",
         "current_investigation": "primary",
         "error_log": [],
-        # Enrichment fields
+        # Primary order enrichment fields
         "aaa_order_id": None,
         "enrichment_flow": False,
-        "actual_order_id": None
+        "actual_order_id": None,
+        # Comparison order enrichment fields
+        "comparison_aaa_order_id": None,
+        "comparison_enrichment_flow": False,
+        "comparison_actual_order_id": None
     }
 
 
