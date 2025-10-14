@@ -22,22 +22,18 @@ def create_supervisor_graph():
     def switch_to_comparison(state):
         """Transition node: Switch from primary to comparison investigation"""
         print("[TRANSITION] Switching to comparison phase")
-        state["current_investigation"] = "comparison"
-        state["investigation_step"] = 0
-        state["aaa_order_id"] = None
-        state["enrichment_flow"] = False
-        state["actual_order_id"] = None
-        return state
+        return {
+            "current_investigation": "comparison",
+            "investigation_step": 0
+        }
     
     def switch_to_comparison_enricher(state):
         """Transition node: Switch to comparison and prepare for enrichment"""
         print("[TRANSITION] Switching to comparison phase (with enrichment)")
-        state["current_investigation"] = "comparison"
-        state["investigation_step"] = 0
-        state["aaa_order_id"] = None
-        state["enrichment_flow"] = False
-        state["actual_order_id"] = None
-        return state
+        return {
+            "current_investigation": "comparison",
+            "investigation_step": 0
+        }
     
     workflow.add_node("switch_to_comparison", switch_to_comparison)
     workflow.add_node("switch_to_comparison_enricher", switch_to_comparison_enricher)
