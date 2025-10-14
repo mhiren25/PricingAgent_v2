@@ -24,10 +24,15 @@ class AgentState(TypedDict):
     findings: dict  # Findings from each agent indexed by agent name
     comparison_findings: dict  # Specific comparison analysis results
     
-    # Order enrichment fields (NEW)
+    # Primary order enrichment fields
     aaa_order_id: Optional[str]  # Cleaned D-prefixed order ID for DB lookup (None if not applicable)
     enrichment_flow: Optional[bool]  # Flag indicating if this is an enrichment workflow
     actual_order_id: Optional[str]  # Actual order ID retrieved from DB after enrichment
+    
+    # Comparison order enrichment fields (NEW - separate from primary)
+    comparison_aaa_order_id: Optional[str]  # Cleaned D-prefixed comparison order ID
+    comparison_enrichment_flow: Optional[bool]  # Enrichment flag for comparison order
+    comparison_actual_order_id: Optional[str]  # Actual comparison order ID from DB
     
     # Output
     final_answer: str  # Synthesized final response
