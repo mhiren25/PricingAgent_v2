@@ -90,11 +90,7 @@ WHERE o.order_id = '{order_id}';
     def _execute_tool(self, context: Dict, state: Dict) -> Dict[str, Any]:
         """
         Execute database queries - handles both enrichment and normal flow
-        
-        Flow:
-        1. Check if enrichment_flow is True
-        2. If enrichment: lookup actual_order_id using aaa_order_id
-        3. If normal: query trade data using order_id
+        Uses separate fields for primary vs comparison orders
         
         Args:
             context: Investigation context
@@ -103,16 +99,20 @@ WHERE o.order_id = '{order_id}';
         Returns:
             Dict with query results
         """
-        # Check if this is an enrichment flow
-        enrichment_flow = state.get("enrichment_flow", False)
+        current_inv = state.get("current_investigation", "primary")
         
-        # DEBUG logging
-        print(f"\n[DB_AGENT] enrichment_flow={enrichment_flow}, aaa_order_id={state.get('aaa_order_id')}, actual_order_id={state.get('actual_order_id')}")
+        # Get enrichment flags based on current investigation phase
+        if current_inv == "comparison":
+            enrichment_flow = state.get("comparison_enrichment_flow", False)
+            aaa_order_id = state.get("comparison_aaa_order_id")
+            print(f"\n[DB_AGENT] COMPARISON - enrichment_flow={enrichment_flow}, aaa_order_id={aaa_order_id}")
+        else:
+            enrichment_flow = state.get("enrichment_flow", False)
+            aaa_order_id = state.get("aaa_order_id")
+            print(f"\n[DB_AGENT] PRIMARY - enrichment_flow={enrichment_flow}, aaa_order_id={aaa_order_id}")
         
         if enrichment_flow:
             # ENRICHMENT MODE: Lookup actual order ID
-            aaa_order_id = state.get("aaa_order_id")
-            
             if not aaa_order_id:
                 return {
                     "error": "Missing aaa_order_id in enrichment flow",
@@ -125,27 +125,18 @@ WHERE o.order_id = '{order_id}';
             lookup_result = self.lookup_actual_order_id.invoke({"aaa_order_id": aaa_order_id})
             actual_order_id = lookup_result["actual_order_id"]
             
-            # Store actual_order_id in state for subsequent agents
-            state["actual_order_id"] = actual_order_id
-            
-            # Clear enrichment_flow flag after successful enrichment
-            # This prevents subsequent DB calls from running in enrichment mode
-            state["enrichment_flow"] = False
-            
-            print(f"[DB_AGENT] Enrichment complete: {aaa_order_id} -> {actual_order_id}, enrichment_flow set to False")
-            
-            # Update the parameters with actual order ID for downstream agents
-            params = state.get("parameters")
-            current_inv = state.get("current_investigation", "primary")
-            
+            # Store actual_order_id in appropriate state field
             if current_inv == "comparison":
-                # Update comparison order ID
-                if params:
-                    params.comparison_order_id = actual_order_id
+                state["comparison_actual_order_id"] = actual_order_id
+                state["comparison_enrichment_flow"] = False  # Clear flag
+                print(f"[DB_AGENT] Enrichment complete: comparison_actual_order_id={actual_order_id}, comparison_enrichment_flow=False")
             else:
-                # Update primary order ID
-                if params:
-                    params.order_id = actual_order_id
+                state["actual_order_id"] = actual_order_id
+                state["enrichment_flow"] = False  # Clear flag
+                print(f"[DB_AGENT] Enrichment complete: actual_order_id={actual_order_id}, enrichment_flow=False")
+            
+            # DO NOT modify params.order_id directly - causes InvalidUpdateError
+            # The context will use actual_order_id from state instead
             
             return {
                 "raw_data": f"""**Order ID Enrichment Completed**
@@ -153,6 +144,7 @@ WHERE o.order_id = '{order_id}';
 🔍 **Lookup Details:**
 - AAA Order ID (Input): `{aaa_order_id}`
 - Actual Order ID (Found): `{actual_order_id}`
+- Investigation Phase: {current_inv.upper()}
 - Lookup Status: ✅ Success
 
 **Next Step:** Using `{actual_order_id}` for investigation
@@ -171,8 +163,11 @@ WHERE o.order_id = '{order_id}';
             order_id = context.get("order_id", "")
             
             # Check if we should use actual_order_id from enrichment
-            if not order_id and state.get("actual_order_id"):
-                order_id = state.get("actual_order_id")
+            if not order_id:
+                if current_inv == "comparison":
+                    order_id = state.get("comparison_actual_order_id", "")
+                else:
+                    order_id = state.get("actual_order_id", "")
             
             print(f"[DB_AGENT] NORMAL MODE: Querying trade data for {order_id}")
             
