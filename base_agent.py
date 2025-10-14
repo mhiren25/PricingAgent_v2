@@ -75,7 +75,7 @@ class BaseAgent(ABC):
     def _get_investigation_context(self, state: Dict) -> Dict[str, Any]:
         """
         Extract investigation context (primary or comparison order)
-        Supports order enrichment flow
+        Supports order enrichment flow with separate fields per order
         
         Args:
             state: Current agent state
@@ -86,16 +86,20 @@ class BaseAgent(ABC):
         current_inv = state.get("current_investigation", "primary")
         params = state.get("parameters")
         
-        # Check for enriched order ID
-        actual_order_id = state.get("actual_order_id")
-        enrichment_flow = state.get("enrichment_flow", False)
+        # Check for enriched order ID based on investigation phase
+        if current_inv == "comparison":
+            actual_order_id = state.get("comparison_actual_order_id")
+            enrichment_flow = state.get("comparison_enrichment_flow", False)
+        else:
+            actual_order_id = state.get("actual_order_id")
+            enrichment_flow = state.get("enrichment_flow", False)
         
         if current_inv == "comparison":
             # Comparison order context
             order_id = params.comparison_order_id if params else ""
             
             # Use actual_order_id if available from enrichment
-            if actual_order_id and enrichment_flow:
+            if actual_order_id and not enrichment_flow:
                 order_id = actual_order_id
             
             return {
@@ -103,14 +107,14 @@ class BaseAgent(ABC):
                 "date": params.comparison_date if params else "",
                 "findings_key": "comparison_findings",
                 "prefix": "[COMPARISON ORDER]",
-                "enriched": bool(actual_order_id and enrichment_flow)
+                "enriched": bool(actual_order_id and not enrichment_flow)
             }
         
         # Primary order context
         order_id = params.order_id if params else ""
         
         # Use actual_order_id if available from enrichment
-        if actual_order_id and enrichment_flow:
+        if actual_order_id and not enrichment_flow:
             order_id = actual_order_id
         
         return {
@@ -118,7 +122,7 @@ class BaseAgent(ABC):
             "date": params.date if params else "",
             "findings_key": "findings",
             "prefix": "[PRIMARY ORDER]",
-            "enriched": bool(actual_order_id and enrichment_flow)
+            "enriched": bool(actual_order_id and not enrichment_flow)
         }
     
     def _get_cache_key(self, *args) -> str:
