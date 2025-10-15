@@ -125,20 +125,10 @@ WHERE o.order_id = '{order_id}';
             lookup_result = self.lookup_actual_order_id.invoke({"aaa_order_id": aaa_order_id})
             actual_order_id = lookup_result["actual_order_id"]
             
-            # Store actual_order_id in appropriate state field
-            if current_inv == "comparison":
-                state["comparison_actual_order_id"] = actual_order_id
-                state["comparison_enrichment_flow"] = False  # Clear flag
-                print(f"[DB_AGENT] Enrichment complete: comparison_actual_order_id={actual_order_id}, comparison_enrichment_flow=False")
-            else:
-                state["actual_order_id"] = actual_order_id
-                state["enrichment_flow"] = False  # Clear flag
-                print(f"[DB_AGENT] Enrichment complete: actual_order_id={actual_order_id}, enrichment_flow=False")
+            print(f"[DB_AGENT] Enrichment complete: {aaa_order_id} -> {actual_order_id}")
             
-            # DO NOT modify params.order_id directly - causes InvalidUpdateError
-            # The context will use actual_order_id from state instead
-            
-            return {
+            # Return enrichment result with state updates based on phase
+            result = {
                 "raw_data": f"""**Order ID Enrichment Completed**
 
 🔍 **Lookup Details:**
@@ -157,6 +147,18 @@ WHERE o.order_id = '{order_id}';
                 "aaa_order_id": aaa_order_id,
                 "enrichment_completed": True
             }
+            
+            # Add state updates to result based on phase
+            if current_inv == "comparison":
+                result["comparison_actual_order_id"] = actual_order_id
+                result["comparison_enrichment_flow"] = False  # Clear flag
+                print(f"[DB_AGENT] Setting: comparison_actual_order_id={actual_order_id}, comparison_enrichment_flow=False")
+            else:
+                result["actual_order_id"] = actual_order_id
+                result["enrichment_flow"] = False  # Clear flag
+                print(f"[DB_AGENT] Setting: actual_order_id={actual_order_id}, enrichment_flow=False")
+            
+            return result
         
         else:
             # NORMAL MODE: Query trade data
