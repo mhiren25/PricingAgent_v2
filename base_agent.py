@@ -261,19 +261,14 @@ Provide a concise, actionable summary (3-5 sentences max).
         """
         Main execution with error handling and retry logic
         
-        Workflow:
-        1. Get investigation context (with enrichment support)
-        2. Check cache (if enabled)
-        3. Execute tool
-        4. Reflect on results (if needed)
-        5. Store findings
-        6. Handle errors gracefully
+        IMPORTANT: Only returns UPDATES to state, not full state
+        This prevents InvalidUpdateError
         
         Args:
             state: Current agent state
             
         Returns:
-            Updated state
+            Dict with only the fields that need updating
         """
         context = self._get_investigation_context(state)
         prefix = context["prefix"]
@@ -310,31 +305,37 @@ Provide a concise, actionable summary (3-5 sentences max).
             findings["analysis"] = analysis
             self._store_findings(state, findings, context)
             
-            # Add message to conversation
-            state["messages"].append(AIMessage(
+            # Create AI message
+            ai_message = AIMessage(
                 content=f"**[{self.name}] {prefix}**\n\n{analysis}",
                 name=self.name
-            ))
+            )
             
             logger.info(f"{self.name}: Execution successful")
+            
+            # IMPORTANT: Only return updates, never return user_query
+            return {
+                "messages": [ai_message],  # Will be appended
+                "sender": self.name
+            }
             
         except Exception as e:
             logger.error(f"{self.name} failed: {str(e)}", exc_info=True)
             
             error_msg = f"⚠️ {self.name} encountered an error: {str(e)}"
             
-            # Log error
-            if "error_log" not in state:
-                state["error_log"] = []
-            state["error_log"].append(f"{self.name}: {str(e)}")
-            
-            # Add error message
-            state["messages"].append(AIMessage(
+            # Create error message
+            error_ai_message = AIMessage(
                 content=f"**[{self.name}] {prefix}**\n\n{error_msg}",
                 name=self.name
-            ))
+            )
             
-            # Store error in findings
+            # Store error in findings (modifies state directly)
             self._store_findings(state, {"error": str(e)}, context)
-        
-        return state
+            
+            # IMPORTANT: Only return updates, never return user_query
+            return {
+                "messages": [error_ai_message],
+                "sender": self.name,
+                "error_log": [f"{self.name}: {str(e)}"]  # Will be appended
+            }
