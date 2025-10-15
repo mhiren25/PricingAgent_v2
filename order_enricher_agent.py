@@ -115,6 +115,10 @@ Expected format: D-prefix with 9 characters total (e.g., D12345678 or D12.345.67
         
         # Store the cleaned order ID in appropriate state field based on phase
         # IMPORTANT: Don't return full state, only return the updates needed
+        
+        # Date info for display
+        date_info = f"\n**Date:** `{date}`" if date else ""
+        
         result = {
             "summary": f"Enriched {original_order_id} → {clean_order_id}",
             "original_order_id": original_order_id,
