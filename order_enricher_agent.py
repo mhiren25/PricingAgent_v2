@@ -114,19 +114,14 @@ Expected format: D-prefix with 9 characters total (e.g., D12345678 or D12.345.67
             }
         
         # Store the cleaned order ID in appropriate state field based on phase
-        if current_inv == "comparison":
-            state["comparison_aaa_order_id"] = clean_order_id
-            state["comparison_enrichment_flow"] = True
-            print(f"[ORDER_ENRICHER] Comparison: comparison_aaa_order_id={clean_order_id}, comparison_enrichment_flow=True")
-        else:
-            state["aaa_order_id"] = clean_order_id
-            state["enrichment_flow"] = True
-            print(f"[ORDER_ENRICHER] Primary: aaa_order_id={clean_order_id}, enrichment_flow=True")
-        
-        # Date info for display
-        date_info = f"\n**Date:** `{date}`" if date else ""
-        
-        return {
+        # IMPORTANT: Don't return full state, only return the updates needed
+        result = {
+            "summary": f"Enriched {original_order_id} → {clean_order_id}",
+            "original_order_id": original_order_id,
+            "cleaned_order_id": clean_order_id,
+            "date": date,
+            "investigation_phase": current_inv,
+            "enrichment_ready": True,
             "raw_data": f"""{prefix} 🔧 **Order ID Enrichment Prepared**
 
 **Original Order ID:** `{original_order_id}`
@@ -136,11 +131,17 @@ Expected format: D-prefix with 9 characters total (e.g., D12345678 or D12.345.67
 **Next Step:** Database Agent will lookup actual Order ID using `{clean_order_id}`
 
 ---
-*Investigation Phase:* {current_inv.upper()}""",
-            "summary": f"Enriched {original_order_id} → {clean_order_id}",
-            "original_order_id": original_order_id,
-            "cleaned_order_id": clean_order_id,
-            "date": date,
-            "investigation_phase": current_inv,
-            "enrichment_ready": True
+*Investigation Phase:* {current_inv.upper()}"""
         }
+        
+        # Update state fields based on phase - modify state directly, don't return user_query
+        if current_inv == "comparison":
+            state["comparison_aaa_order_id"] = clean_order_id
+            state["comparison_enrichment_flow"] = True
+            print(f"[ORDER_ENRICHER] Comparison: comparison_aaa_order_id={clean_order_id}, comparison_enrichment_flow=True")
+        else:
+            state["aaa_order_id"] = clean_order_id
+            state["enrichment_flow"] = True
+            print(f"[ORDER_ENRICHER] Primary: aaa_order_id={clean_order_id}, enrichment_flow=True")
+        
+        return result
