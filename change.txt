@@ -1,0 +1,224 @@
+# Database Agent Routing Fix - Complete Summary
+
+## 🎯 Problem
+
+When DB Agent is called twice in enrichment flow:
+1. **First call**: Order Enricher → DB Agent (enrichment lookup)
+2. **Second call**: Splunk → DB Agent (trade fields)
+
+The routing couldn't distinguish between these two calls, so after the second DB call it would go back to Splunk instead of DebugAPI.
+
+## ✅ Solution
+
+Check the **message history** to see what happened before the current DB Agent call.
+
+## 📝 Code Changes
+
+### Location: `src/graph/workflow.py` in `route_next_agent()` function
+
+### Change 1: Investigation Flow - Database Agent Routing
+
+**Find this section:**
+```python
+elif sender == "Database_Agent":
+    enrichment_completed = state.get("actual_order_id") is not None
+    enrichment_active = state.get("enrichment_flow", False)
+    
+    print(f"[INVESTIGATION] DB Agent - enrichment_completed: {enrichment_completed}, enrichment_active: {enrichment_active}")
+    
+    if enrichment_completed and not enrichment_active:
+        print(f"[INVESTIGATION] → splunkagent (after enrichment)")
+        return "splunkagent"
+    else:
+        print(f"[INVESTIGATION] → debugapiagent (for trade fields)")
+        return "debugapiagent"
+```
+
+**Replace with:**
+```python
+elif sender == "Database_Agent":
+    # Check if we just completed enrichment or getting trade fields
+    enrichment_completed = state.get("actual_order_id") is not None
+    enrichment_active = state.get("enrichment_flow", False)
+    
+    print(f"[INVESTIGATION] DB Agent - enrichment_completed: {enrichment_completed}, enrichment_active: {enrichment_active}")
+    
+    # CRITICAL: Check message history to determine context
+    messages = state.get("messages", [])
+    recent_agents = [msg.name for msg in messages[-5:] if hasattr(msg, 'name')]
+    print(f"[INVESTIGATION] Recent agents: {recent_agents}")
+    
+    # If Splunk was called before this DB call, we're getting trade fields
+    if "Splunk_Agent" in recent_agents:
+        # This DB call is for trade fields (after Splunk found no logs)
+        print(f"[INVESTIGATION] → debugapiagent (DB called after Splunk for trade fields)")
+        return "debugapiagent"
+    elif enrichment_completed and not enrichment_active:
+        # This DB call was for enrichment
+        print(f"[INVESTIGATION] → splunkagent (after enrichment)")
+        return "splunkagent"
+    else:
+        # Fallback - probably trade fields
+        print(f"[INVESTIGATION] → debugapiagent (fallback)")
+        return "debugapiagent"
+```
+
+### Change 2: Comparison Flow - Primary Order DB Agent
+
+**Find this section in primary investigation:**
+```python
+elif sender == "Database_Agent":
+    # Check enrichment status for PRIMARY order
+    enrichment_completed = state.get("actual_order_id") is not None
+    enrichment_active = state.get("enrichment_flow", False)
+    
+    print(f"[PRIMARY] DB Agent - enrichment_completed: {enrichment_completed}, enrichment_active: {enrichment_active}")
+    
+    if enrichment_completed and not enrichment_active:
+        print(f"[PRIMARY] → splunkagent (after enrichment)")
+        return "splunkagent"
+    else:
+        print(f"[PRIMARY] → debugapiagent (for trade fields)")
+        return "debugapiagent"
+```
+
+**Replace with:**
+```python
+elif sender == "Database_Agent":
+    # Check enrichment status for PRIMARY order
+    enrichment_completed = state.get("actual_order_id") is not None
+    enrichment_active = state.get("enrichment_flow", False)
+    
+    print(f"[PRIMARY] DB Agent - enrichment_completed: {enrichment_completed}, enrichment_active: {enrichment_active}")
+    
+    # Check message history to determine context
+    messages = state.get("messages", [])
+    recent_agents = [msg.name for msg in messages[-5:] if hasattr(msg, 'name')]
+    print(f"[PRIMARY] Recent agents: {recent_agents}")
+    
+    # If Splunk was called before this DB call, we're getting trade fields
+    if "Splunk_Agent" in recent_agents:
+        print(f"[PRIMARY] → debugapiagent (DB called after Splunk for trade fields)")
+        return "debugapiagent"
+    elif enrichment_completed and not enrichment_active:
+        print(f"[PRIMARY] → splunkagent (after enrichment)")
+        return "splunkagent"
+    else:
+        print(f"[PRIMARY] → debugapiagent (fallback)")
+        return "debugapiagent"
+```
+
+### Change 3: Comparison Flow - Comparison Order DB Agent
+
+**Find this section in comparison investigation:**
+```python
+elif sender == "Database_Agent":
+    # Check enrichment status for COMPARISON order
+    enrichment_completed = state.get("comparison_actual_order_id") is not None
+    enrichment_active = state.get("comparison_enrichment_flow", False)
+    
+    print(f"[COMPARISON] DB Agent - enrichment_completed: {enrichment_completed}, enrichment_active: {enrichment_active}")
+    
+    if enrichment_completed and not enrichment_active:
+        print(f"[COMPARISON] → splunkagent (after enrichment)")
+        return "splunkagent"
+    else:
+        print(f"[COMPARISON] → debugapiagent (for trade fields)")
+        return "debugapiagent"
+```
+
+**Replace with:**
+```python
+elif sender == "Database_Agent":
+    # Check enrichment status for COMPARISON order
+    enrichment_completed = state.get("comparison_actual_order_id") is not None
+    enrichment_active = state.get("comparison_enrichment_flow", False)
+    
+    print(f"[COMPARISON] DB Agent - enrichment_completed: {enrichment_completed}, enrichment_active: {enrichment_active}")
+    
+    # Check message history to determine context
+    messages = state.get("messages", [])
+    recent_agents = [msg.name for msg in messages[-5:] if hasattr(msg, 'name')]
+    print(f"[COMPARISON] Recent agents: {recent_agents}")
+    
+    # If Splunk was called before this DB call, we're getting trade fields
+    if "Splunk_Agent" in recent_agents:
+        print(f"[COMPARISON] → debugapiagent (DB called after Splunk for trade fields)")
+        return "debugapiagent"
+    elif enrichment_completed and not enrichment_active:
+        print(f"[COMPARISON] → splunkagent (after enrichment)")
+        return "splunkagent"
+    else:
+        print(f"[COMPARISON] → debugapiagent (fallback)")
+        return "debugapiagent"
+```
+
+## 🔍 How It Works
+
+### Scenario: D-Order with No Logs
+
+```
+Step 1: Order Enricher runs
+  messages = [OrderEnricher]
+
+Step 2: DB Agent (enrichment)
+  messages = [OrderEnricher, DB]
+  recent_agents = [OrderEnricher, DB]
+  "Splunk_Agent" NOT in recent_agents
+  → Route to Splunk ✅
+
+Step 3: Splunk Agent (no logs found)
+  messages = [OrderEnricher, DB, Splunk]
+  logs_found = False
+  → Route to DB
+
+Step 4: DB Agent (trade fields)
+  messages = [OrderEnricher, DB, Splunk, DB]
+  recent_agents = [Splunk, DB]
+  "Splunk_Agent" IN recent_agents ✅
+  → Route to DebugAPI ✅
+
+Step 5: DebugAPI → Summarization
+```
+
+## 📊 Debug Output
+
+After the fix, you'll see:
+
+```
+[INVESTIGATION] DB Agent - enrichment_completed: True, enrichment_active: False
+[INVESTIGATION] Recent agents: ['Order_Enricher_Agent', 'Database_Agent']
+[INVESTIGATION] → splunkagent (after enrichment)
+
+... Splunk runs, finds no logs ...
+
+[INVESTIGATION] DB Agent - enrichment_completed: True, enrichment_active: False
+[INVESTIGATION] Recent agents: ['Database_Agent', 'Splunk_Agent', 'Database_Agent']
+[INVESTIGATION] → debugapiagent (DB called after Splunk for trade fields)
+```
+
+## ✅ Apply the Changes
+
+1. Open `src/graph/workflow.py`
+2. Find the `route_next_agent()` function
+3. Locate the three sections mentioned above
+4. Apply the replacements
+5. Save the file
+
+## 🧪 Test
+
+```bash
+python run_agent.py -q "Get logs for D12345678 order"
+```
+
+Expected flow:
+1. Supervisor
+2. Order Enricher
+3. DB Agent (enrichment)
+4. Splunk Agent
+5. DB Agent (trade fields) ← Should route to DebugAPI now
+6. DebugAPI Agent ✅
+7. Summarization
+8. Synthesis
+
+The key is that the routing now checks `recent_agents` list instead of just relying on the `sender` field!
