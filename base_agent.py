@@ -314,10 +314,27 @@ Provide a concise, actionable summary (3-5 sentences max).
             logger.info(f"{self.name}: Execution successful")
             
             # IMPORTANT: Only return updates, never return user_query
-            return {
-                "messages": [ai_message],  # Will be appended
+            # Pass through any enrichment fields from findings
+            updates = {
+                "messages": [ai_message],
                 "sender": self.name
             }
+            
+            # Pass through enrichment state updates if present
+            if "aaa_order_id" in findings:
+                updates["aaa_order_id"] = findings["aaa_order_id"]
+            if "enrichment_flow" in findings:
+                updates["enrichment_flow"] = findings["enrichment_flow"]
+            if "actual_order_id" in findings:
+                updates["actual_order_id"] = findings["actual_order_id"]
+            if "comparison_aaa_order_id" in findings:
+                updates["comparison_aaa_order_id"] = findings["comparison_aaa_order_id"]
+            if "comparison_enrichment_flow" in findings:
+                updates["comparison_enrichment_flow"] = findings["comparison_enrichment_flow"]
+            if "comparison_actual_order_id" in findings:
+                updates["comparison_actual_order_id"] = findings["comparison_actual_order_id"]
+            
+            return updates
             
         except Exception as e:
             logger.error(f"{self.name} failed: {str(e)}", exc_info=True)
