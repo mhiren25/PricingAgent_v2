@@ -79,8 +79,6 @@ Provide structured output."""
             # Ensure dates are properly set
             params.ensure_dates_set()
             
-            state["parameters"] = params
-            
             # Format date display
             date_info = ""
             if params.date:
@@ -92,23 +90,34 @@ Provide structured output."""
                 if params.comparison_date:
                     comparison_info += f"\nComparison Date: {params.comparison_date}"
             
-            state["messages"].append(AIMessage(
+            ai_message = AIMessage(
                 content=f"""**[Supervisor Analysis]**
 Intent: {params.intent}
 Order ID: {params.order_id or 'Not required'}{date_info}{comparison_info}
 Reasoning: {params.reasoning}""",
                 name=self.name
-            ))
+            )
+            
+            # IMPORTANT: Only return updates, never return user_query
+            return {
+                "parameters": params,
+                "messages": [ai_message]
+            }
+            
         except Exception as e:
             # Fallback - create parameters with empty order_id and current date
             from src.utils.date_handler import DateHandler
-            state["parameters"] = QueryParameters(
+            fallback_params = QueryParameters(
                 intent="Knowledge",
                 date=DateHandler.get_current_date(),
                 reasoning=f"Fallback due to error: {e}"
             )
-        
-        return state
+            
+            # IMPORTANT: Only return updates
+            return {
+                "parameters": fallback_params,
+                "messages": []
+            }
     
     def synthesize_findings(self, state: Dict) -> Dict:
         """
