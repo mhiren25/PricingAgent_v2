@@ -53,7 +53,8 @@ def create_supervisor_graph():
         def make_node(agent):
             def node(state):
                 result = agent.execute(state)
-                result["investigation_step"] = state.get("investigation_step", 0) + 1
+                # DON'T increment investigation_step here - it causes double increment
+                # Just pass through the result
                 return result
             return node
         
@@ -114,9 +115,19 @@ def create_supervisor_graph():
     def route_next_agent(state):
         """
         Pure routing function - determines next agent
-        IMPORTANT: This function should NOT modify state - only return next node name
+        IMPORTANT: Use messages to determine last agent, not sender field (which may not be updated yet)
         """
-        sender = state.get("sender", "")
+        # Get the ACTUAL last agent from messages (more reliable than sender field)
+        messages = state.get("messages", [])
+        sender = None
+        for msg in reversed(messages):
+            if hasattr(msg, 'name') and msg.name and msg.name != "Supervisor":
+                sender = msg.name
+                break
+        
+        if not sender:
+            sender = state.get("sender", "")
+        
         params = state.get("parameters")
         intent = params.intent if params else "Investigation"
         current_inv = state.get("current_investigation", "primary")
@@ -125,7 +136,7 @@ def create_supervisor_graph():
         # DEBUG LOGGING
         print(f"\n{'='*60}")
         print(f"[ROUTING] Step {step}")
-        print(f"  Sender: {sender}")
+        print(f"  Sender (from messages): {sender}")
         print(f"  Intent: {intent}")
         print(f"  Investigation Phase: {current_inv}")
         print(f"  Enrichment Flow: {state.get('enrichment_flow', False)}")
