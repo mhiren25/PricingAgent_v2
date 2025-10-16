@@ -68,6 +68,7 @@ Always provide a summary that both technical and non-technical stakeholders can 
     def _format_agent_findings(self, findings: Dict[str, Any]) -> str:
         """
         Format agent findings into readable text for LLM
+        Handles agents called multiple times (stored as lists)
         
         Args:
             findings: Agent findings dictionary
@@ -77,55 +78,48 @@ Always provide a summary that both technical and non-technical stakeholders can 
         """
         formatted_sections = []
         
-        # Track which agents we've seen to handle duplicates (e.g., DB Agent called twice)
-        agent_call_count = {}
-        
         for agent_name, agent_data in findings.items():
-            if not isinstance(agent_data, dict):
-                continue
-            
-            # Count occurrences of each agent
-            if agent_name not in agent_call_count:
-                agent_call_count[agent_name] = 0
-            agent_call_count[agent_name] += 1
-            
-            # Add call number for agents called multiple times
-            display_name = agent_name
-            if agent_call_count[agent_name] > 1:
-                # Check if this is enrichment vs normal call
-                if agent_name == "Database_Agent":
-                    if agent_data.get("enrichment_completed"):
-                        display_name = f"{agent_name} (Enrichment Lookup)"
+            # Handle agents called multiple times (stored as list)
+            if isinstance(agent_data, list):
+                for idx, call_data in enumerate(agent_data, 1):
+                    # Determine the purpose of this call
+                    display_name = agent_name
+                    if agent_name == "Database_Agent":
+                        if call_data.get("enrichment_completed"):
+                            display_name = f"{agent_name} (Call #{idx}: Enrichment Lookup)"
+                        else:
+                            display_name = f"{agent_name} (Call #{idx}: Trade Data)"
                     else:
-                        display_name = f"{agent_name} (Trade Data Retrieval)"
-                else:
-                    display_name = f"{agent_name} (Call #{agent_call_count[agent_name]})"
+                        display_name = f"{agent_name} (Call #{idx})"
+                    
+                    section = self._format_single_finding(display_name, call_data)
+                    formatted_sections.append(section)
             
-            section = f"\n## {display_name}\n"
-            
-            # Add summary if available
-            if "summary" in agent_data:
-                section += f"**Summary:** {agent_data['summary']}\n\n"
-            
-            # Add analysis if available
-            if "analysis" in agent_data:
-                section += f"**Analysis:** {agent_data['analysis']}\n\n"
-            
-            # Add raw data if available (truncate if too long)
-            if "raw_data" in agent_data:
-                raw_data = str(agent_data["raw_data"])
-                if len(raw_data) > 2000:
-                    raw_data = raw_data[:2000] + "\n... (truncated)"
-                section += f"**Details:**\n{raw_data}\n"
-            
-            # Add key fields
-            for key in ["order_id", "logs_found", "enriched", "status", "enrichment_completed", "actual_order_id"]:
-                if key in agent_data and agent_data[key] is not None:
-                    section += f"- **{key.replace('_', ' ').title()}:** {agent_data[key]}\n"
-            
-            formatted_sections.append(section)
+            # Handle single call agents (stored as dict)
+            elif isinstance(agent_data, dict):
+                section = self._format_single_finding(agent_name, agent_data)
+                formatted_sections.append(section)
         
         return "\n".join(formatted_sections)
+    
+    def _format_single_finding(self, agent_name: str, agent_data: dict) -> str:
+        """Format a single agent finding"""
+        section = f"\n## {agent_name}\n"
+        
+        # Add summary if available
+        if "summary" in agent_data:
+            section += f"**Summary:** {agent_data['summary']}\n\n"
+        
+        # Add analysis if available
+        if "analysis" in agent_data:
+            section += f"**Analysis:** {agent_data['analysis']}\n\n"
+        
+        # Add key fields
+        for key in ["order_id", "logs_found", "enriched", "status", "enrichment_completed", "actual_order_id"]:
+            if key in agent_data and agent_data[key] is not None:
+                section += f"- **{key.replace('_', ' ').title()}:** {agent_data[key]}\n"
+        
+        return section
     
     def _generate_summary_prompt(self, all_findings: Dict[str, Any]) -> str:
         """
