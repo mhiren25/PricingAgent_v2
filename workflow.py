@@ -336,15 +336,24 @@ def create_supervisor_graph():
         # Special handling for Database Agent when coming from Order Enricher
         if node_name == "databaseagent":
             def db_router(state):
-                sender = state.get("sender", "")
-                enrichment_just_completed = state.get("actual_order_id") and not state.get("enrichment_flow")
+                # Get the ACTUAL last agent from messages (more reliable than sender field)
+                messages = state.get("messages", [])
+                sender = None
+                for msg in reversed(messages):
+                    if hasattr(msg, 'name') and msg.name and msg.name != "Supervisor":
+                        sender = msg.name
+                        break
                 
+                print(f"\n[DB_ROUTER] Last agent from messages: {sender}")
+                
+                # Check if DB was called right after Order Enricher
                 if sender == "Order_Enricher_Agent":
-                    return route_after_enrichment_db(state)
-                elif enrichment_just_completed and sender == "Database_Agent":
-                    return route_after_enrichment_db(state)
-                else:
-                    return route_next_agent(state)
+                    print(f"[DB_ROUTER] → splunkagent (after enrichment)")
+                    return "splunkagent"
+                
+                # For all other cases, use normal routing logic
+                print(f"[DB_ROUTER] → route_next_agent (normal flow)")
+                return route_next_agent(state)
             
             workflow.add_conditional_edges(
                 node_name,
