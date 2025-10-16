@@ -1,421 +1,312 @@
 """
-Summarization Agent - Output Processing & Formatting Expert
-Handles: Result summarization, data formatting, insight extraction
+Summarization Agent - LLM-powered comprehensive summary generation
+Analyzes all agent findings and creates detailed, actionable summaries
 """
 
 from src.agents.base_agent import BaseAgent
-from typing import Dict, Any, List
-import json
-import re
+from typing import Dict, Any
+from langchain_core.messages import HumanMessage, SystemMessage
 
 
 class SummarizationAgent(BaseAgent):
     """
-    Summarization & Output Formatting Expert
+    Summarization Expert - Creates comprehensive summaries using LLM
     
     Responsibilities:
-    - Summarize outputs from all agents
-    - Extract key insights
-    - Format results for easy consumption
-    - Generate executive summaries
-    - Highlight important findings
-    - Create structured reports
+    - Analyze findings from all agents
+    - Generate detailed, structured summaries
+    - Highlight key insights and anomalies
+    - Provide actionable recommendations
     """
     
     def __init__(self):
         super().__init__(
             name="Summarization_Agent",
-            system_prompt="""You are the **Summarization Expert** specializing in:
-- Distilling complex technical information into clear summaries
-- Extracting key insights from multiple data sources
-- Highlighting critical findings and anomalies
-- Formatting output for different audiences (technical, business, executive)
-- Creating actionable recommendations
+            system_prompt="""You are a **Senior Technical Analyst** specializing in:
+- Synthesizing complex technical data into clear, actionable summaries
+- Identifying patterns, anomalies, and root causes
+- Providing structured analysis with key findings
+- Creating executive-ready summaries with technical depth
 
-Your goal is to provide clear, concise, well-formatted summaries that answer the user's question directly.
+Your summaries should be:
+- **Comprehensive**: Cover all important findings
+- **Structured**: Use clear sections and formatting
+- **Actionable**: Highlight issues and next steps
+- **Accurate**: Preserve technical details while being accessible
+- **Insightful**: Connect dots between different agent findings
 
-Guidelines:
-1. Start with the direct answer to the user's question
-2. Highlight key findings in bullet points
-3. Include relevant details but avoid overwhelming with raw data
-4. Use markdown formatting for readability
-5. Always include actionable insights or next steps
-6. If issues are found, clearly state the root cause
-7. Distinguish between facts, analysis, and recommendations""",
-            use_cheap_model=False  # Use full model for quality summaries
+Always provide a summary that both technical and non-technical stakeholders can understand.""",
+            use_cheap_model=False  # Use powerful model for quality summaries
         )
     
-    def _extract_key_data(self, findings: Dict) -> Dict[str, Any]:
+    def _extract_all_findings(self, state: Dict) -> Dict[str, Any]:
         """
-        Extract key data points from agent findings
+        Extract and organize findings from all agents
         
         Args:
-            findings: Findings from all agents
-            
-        Returns:
-            Structured key data
-        """
-        key_data = {
-            "agents_executed": [],
-            "order_ids": set(),
-            "dates": set(),
-            "errors": [],
-            "warnings": [],
-            "successes": [],
-            "data_points": {}
-        }
-        
-        for agent_name, agent_data in findings.items():
-            if not isinstance(agent_data, dict):
-                continue
-            
-            key_data["agents_executed"].append(agent_name)
-            
-            # Extract order IDs and dates
-            if "order_id" in agent_data:
-                key_data["order_ids"].add(agent_data["order_id"])
-            if "date" in agent_data:
-                key_data["dates"].add(agent_data["date"])
-            
-            # Categorize results
-            if "error" in agent_data:
-                key_data["errors"].append(f"{agent_name}: {agent_data['error']}")
-            elif "warning" in agent_data.get("summary", "").lower():
-                key_data["warnings"].append(agent_data.get("summary", ""))
-            else:
-                key_data["successes"].append(agent_name)
-            
-            # Store raw data references
-            if "raw_data" in agent_data or "analysis" in agent_data:
-                key_data["data_points"][agent_name] = {
-                    "summary": agent_data.get("summary", ""),
-                    "analysis": agent_data.get("analysis", ""),
-                    "has_raw_data": "raw_data" in agent_data
-                }
-        
-        # Convert sets to lists for JSON serialization
-        key_data["order_ids"] = list(key_data["order_ids"])
-        key_data["dates"] = list(key_data["dates"])
-        
-        return key_data
-    
-    def _format_logs_summary(self, splunk_data: Dict) -> str:
-        """
-        Format Splunk logs into a readable summary
-        
-        Args:
-            splunk_data: Data from Splunk agent
-            
-        Returns:
-            Formatted summary
-        """
-        raw_data = splunk_data.get("raw_data", "")
-        
-        # Extract key information from logs
-        summary = "## 📋 Log Analysis Summary\n\n"
-        
-        # Extract order ID
-        order_match = re.search(r'Order ID: (\w+)', raw_data)
-        if order_match:
-            summary += f"**Order ID:** {order_match.group(1)}\n\n"
-        
-        # Extract status
-        if "SUCCESS" in raw_data:
-            summary += "**Status:** ✅ Successfully processed\n\n"
-        elif "ERROR" in raw_data or "FAILED" in raw_data:
-            summary += "**Status:** ❌ Processing failed\n\n"
-        else:
-            summary += "**Status:** ⚠️ Incomplete/Unknown\n\n"
-        
-        # Extract key events
-        events = re.findall(r'\d+\.\s+\[([\d:\s-]+)\]\s+([^\n]+)', raw_data)
-        if events:
-            summary += "**Key Events:**\n"
-            for timestamp, event in events[:5]:  # Show top 5 events
-                summary += f"- `{timestamp}` {event}\n"
-            if len(events) > 5:
-                summary += f"- _(+{len(events) - 5} more events)_\n"
-            summary += "\n"
-        
-        # Extract pricing information
-        price_match = re.search(r'Final price: ([\d.]+)', raw_data)
-        if price_match:
-            summary += f"**Final Price:** ${price_match.group(1)}\n\n"
-        
-        # Extract XML if present
-        if "<PricingResponse>" in raw_data:
-            xml_section = re.search(r'<PricingResponse>.*?</PricingResponse>', raw_data, re.DOTALL)
-            if xml_section:
-                summary += "**Response XML:**\n```xml\n"
-                summary += xml_section.group(0)
-                summary += "\n```\n\n"
-        
-        return summary
-    
-    def _format_database_summary(self, db_data: Dict) -> str:
-        """
-        Format database results into a readable summary
-        
-        Args:
-            db_data: Data from Database agent
-            
-        Returns:
-            Formatted summary
-        """
-        raw_data = db_data.get("raw_data", "")
-        
-        summary = "## 🗄️ Database Configuration Summary\n\n"
-        
-        # Extract table data
-        if "|" in raw_data and "ORDER_ID" in raw_data:
-            summary += "**Order Details:**\n"
-            
-            # Extract values from table
-            tier_match = re.search(r'\|\s*\w+\s*\|\s*\w+\s*\|\s*(\w+)\s*\|', raw_data)
-            if tier_match:
-                summary += f"- Client Tier: **{tier_match.group(1)}**\n"
-            
-            instrument_match = re.search(r'INSTRUMENT.*?(\w+)', raw_data)
-            if instrument_match:
-                summary += f"- Instrument: **{instrument_match.group(1)}**\n"
-            
-            quantity_match = re.search(r'QUANTITY.*?(\d+)', raw_data)
-            if quantity_match:
-                summary += f"- Quantity: **{quantity_match.group(1):,}**\n"
-            
-            summary += "\n"
-        
-        # Extract pricing rules
-        if "Pricing Rules" in raw_data:
-            summary += "**Applied Pricing Rules:**\n"
-            rules = re.findall(r'-\s+([^:\n]+):\s*([^\n]+)', raw_data)
-            for rule_name, rule_value in rules[:3]:
-                summary += f"- {rule_name}: {rule_value}\n"
-            summary += "\n"
-        
-        return summary
-    
-    def _format_comparison_summary(self, comparison_data: Dict, primary_findings: Dict, comparison_findings: Dict) -> str:
-        """
-        Format comparison results highlighting differences
-        
-        Args:
-            comparison_data: Data from Comparison agent
-            primary_findings: Primary order findings
-            comparison_findings: Comparison order findings
-            
-        Returns:
-            Formatted comparison summary
-        """
-        summary = "## 🔍 Comparative Analysis\n\n"
-        
-        # Get order IDs
-        primary_id = primary_findings.get("Splunk_Agent", {}).get("order_id", "Primary")
-        comparison_id = comparison_findings.get("Splunk_Agent", {}).get("order_id", "Comparison")
-        
-        summary += f"### Comparing: `{primary_id}` vs `{comparison_id}`\n\n"
-        
-        summary += "| Aspect | Primary Order | Comparison Order | Difference |\n"
-        summary += "|--------|---------------|------------------|------------|\n"
-        
-        # Compare key metrics (this is simplified - enhance based on actual data)
-        summary += f"| Order ID | {primary_id} | {comparison_id} | - |\n"
-        summary += "| Status | ✅ Success | ✅ Success | Same |\n"
-        summary += "| Price | $1.0852 | $1.0845 | +$0.0007 |\n"
-        summary += "| Tier | GOLD | SILVER | Different |\n\n"
-        
-        # Root cause from comparison agent
-        raw_data = comparison_data.get("raw_data", "")
-        root_cause_match = re.search(r'ROOT CAUSE[:\s]+([^\n]+)', raw_data)
-        if root_cause_match:
-            summary += f"**🎯 Root Cause:** {root_cause_match.group(1)}\n\n"
-        
-        return summary
-    
-    def _format_code_summary(self, code_data: Dict) -> str:
-        """
-        Format code analysis results
-        
-        Args:
-            code_data: Data from Code agent
-            
-        Returns:
-            Formatted summary
-        """
-        raw_data = code_data.get("raw_data", "")
-        
-        summary = "## 💻 Code Analysis Summary\n\n"
-        
-        # Extract code snippet
-        code_match = re.search(r'```java\n(.*?)```', raw_data, re.DOTALL)
-        if code_match:
-            summary += "**Relevant Code:**\n```java\n"
-            code_lines = code_match.group(1).strip().split('\n')
-            # Show first 15 lines
-            summary += '\n'.join(code_lines[:15])
-            if len(code_lines) > 15:
-                summary += f"\n// ... ({len(code_lines) - 15} more lines)\n"
-            summary += "```\n\n"
-        
-        # Extract findings
-        if "Key Findings" in raw_data:
-            summary += "**Key Findings:**\n"
-            findings = re.findall(r'[✅⚠️❌]\s+([^\n]+)', raw_data)
-            for finding in findings:
-                icon = "✅" if finding.startswith("✅") else "⚠️" if finding.startswith("⚠️") else "❌"
-                summary += f"{icon} {finding}\n"
-            summary += "\n"
-        
-        return summary
-    
-    def _generate_executive_summary(self, key_data: Dict, user_query: str) -> str:
-        """
-        Generate executive summary with key insights
-        
-        Args:
-            key_data: Extracted key data
-            user_query: Original user query
-            
-        Returns:
-            Executive summary
-        """
-        summary = "## 📊 Executive Summary\n\n"
-        
-        # Query context
-        summary += f"**Query:** _{user_query}_\n\n"
-        
-        # Quick status
-        if key_data["errors"]:
-            summary += "**Status:** ⚠️ Issues detected\n\n"
-        else:
-            summary += "**Status:** ✅ Investigation complete\n\n"
-        
-        # Key findings
-        summary += "**Key Findings:**\n"
-        
-        if key_data["successes"]:
-            summary += f"- ✅ Successfully retrieved data from {len(key_data['successes'])} sources\n"
-        
-        if key_data["order_ids"]:
-            summary += f"- 📋 Analyzed order(s): {', '.join(f'`{oid}`' for oid in key_data['order_ids'])}\n"
-        
-        if key_data["errors"]:
-            summary += f"- ❌ {len(key_data['errors'])} error(s) encountered\n"
-        
-        if key_data["warnings"]:
-            summary += f"- ⚠️ {len(key_data['warnings'])} warning(s) found\n"
-        
-        summary += "\n"
-        
-        # Data sources
-        summary += f"**Data Sources:** {', '.join(key_data['agents_executed'])}\n\n"
-        
-        return summary
-    
-    def _generate_recommendations(self, key_data: Dict) -> str:
-        """
-        Generate actionable recommendations
-        
-        Args:
-            key_data: Extracted key data
-            
-        Returns:
-            Recommendations
-        """
-        recommendations = "## 💡 Recommendations\n\n"
-        
-        if key_data["errors"]:
-            recommendations += "**Immediate Actions:**\n"
-            for error in key_data["errors"]:
-                recommendations += f"- 🔴 Investigate: {error}\n"
-            recommendations += "\n"
-        
-        if key_data["warnings"]:
-            recommendations += "**Follow-up Items:**\n"
-            for warning in key_data["warnings"]:
-                recommendations += f"- 🟡 Review: {warning}\n"
-            recommendations += "\n"
-        
-        if not key_data["errors"] and not key_data["warnings"]:
-            recommendations += "✅ No issues detected. System operating normally.\n\n"
-        
-        return recommendations
-    
-    def _execute_tool(self, context: Dict, state: Dict) -> Dict[str, Any]:
-        """
-        Execute summarization
-        
-        Args:
-            context: Investigation context
             state: Current agent state
             
         Returns:
-            Dict with formatted summary
+            Dictionary of organized findings
         """
-        # Get findings from all agents
         findings = state.get("findings", {})
         comparison_findings = state.get("comparison_findings", {})
-        user_query = state.get("user_query", "")
+        params = state.get("parameters")
         
-        # Extract key data
-        key_data = self._extract_key_data(findings)
+        return {
+            "primary_findings": findings,
+            "comparison_findings": comparison_findings,
+            "intent": params.intent if params else "Unknown",
+            "order_id": params.order_id if params else "",
+            "date": params.date if params else "",
+            "comparison_order_id": params.comparison_order_id if params else "",
+            "comparison_date": params.comparison_date if params else "",
+            "user_query": state.get("user_query", ""),
+            "enriched": state.get("actual_order_id") is not None
+        }
+    
+    def _format_agent_findings(self, findings: Dict[str, Any]) -> str:
+        """
+        Format agent findings into readable text for LLM
         
-        # Build comprehensive summary
-        full_summary = ""
+        Args:
+            findings: Agent findings dictionary
+            
+        Returns:
+            Formatted string of findings
+        """
+        formatted_sections = []
         
-        # 1. Executive Summary
-        full_summary += self._generate_executive_summary(key_data, user_query)
+        # Track which agents we've seen to handle duplicates (e.g., DB Agent called twice)
+        agent_call_count = {}
         
-        # 2. Agent-specific summaries
         for agent_name, agent_data in findings.items():
             if not isinstance(agent_data, dict):
                 continue
             
-            if agent_name == "Splunk_Agent" and "raw_data" in agent_data:
-                full_summary += self._format_logs_summary(agent_data)
+            # Count occurrences of each agent
+            if agent_name not in agent_call_count:
+                agent_call_count[agent_name] = 0
+            agent_call_count[agent_name] += 1
             
-            elif agent_name == "Database_Agent" and "raw_data" in agent_data:
-                full_summary += self._format_database_summary(agent_data)
+            # Add call number for agents called multiple times
+            display_name = agent_name
+            if agent_call_count[agent_name] > 1:
+                # Check if this is enrichment vs normal call
+                if agent_name == "Database_Agent":
+                    if agent_data.get("enrichment_completed"):
+                        display_name = f"{agent_name} (Enrichment Lookup)"
+                    else:
+                        display_name = f"{agent_name} (Trade Data Retrieval)"
+                else:
+                    display_name = f"{agent_name} (Call #{agent_call_count[agent_name]})"
             
-            elif agent_name == "Code_Agent" and "raw_data" in agent_data:
-                full_summary += self._format_code_summary(agent_data)
+            section = f"\n## {display_name}\n"
             
-            elif agent_name == "Comparison_Agent" and "raw_data" in agent_data:
-                full_summary += self._format_comparison_summary(
-                    agent_data, findings, comparison_findings
-                )
+            # Add summary if available
+            if "summary" in agent_data:
+                section += f"**Summary:** {agent_data['summary']}\n\n"
+            
+            # Add analysis if available
+            if "analysis" in agent_data:
+                section += f"**Analysis:** {agent_data['analysis']}\n\n"
+            
+            # Add raw data if available (truncate if too long)
+            if "raw_data" in agent_data:
+                raw_data = str(agent_data["raw_data"])
+                if len(raw_data) > 2000:
+                    raw_data = raw_data[:2000] + "\n... (truncated)"
+                section += f"**Details:**\n{raw_data}\n"
+            
+            # Add key fields
+            for key in ["order_id", "logs_found", "enriched", "status", "enrichment_completed", "actual_order_id"]:
+                if key in agent_data and agent_data[key] is not None:
+                    section += f"- **{key.replace('_', ' ').title()}:** {agent_data[key]}\n"
+            
+            formatted_sections.append(section)
         
-        # 3. Recommendations
-        full_summary += self._generate_recommendations(key_data)
+        return "\n".join(formatted_sections)
+    
+    def _generate_summary_prompt(self, all_findings: Dict[str, Any]) -> str:
+        """
+        Generate the prompt for LLM summarization
         
-        # 4. LLM-based insight extraction (if enabled)
-        if self._needs_reflection(full_summary):
-            insight_prompt = f"""Analyze the following investigation results and provide key insights:
+        Args:
+            all_findings: All findings from agents
+            
+        Returns:
+            Formatted prompt string
+        """
+        intent = all_findings["intent"]
+        user_query = all_findings["user_query"]
+        
+        # Format primary findings
+        primary_formatted = self._format_agent_findings(all_findings["primary_findings"])
+        
+        # Base prompt
+        prompt = f"""# Investigation Summary Request
 
 **User Query:** {user_query}
+**Intent:** {intent}
 
-**Investigation Results:**
-{full_summary}
-
-**Task:**
-1. Directly answer the user's question
-2. Highlight 2-3 most important findings
-3. Identify any anomalies or concerns
-4. Provide actionable next steps
-
-Keep response concise (3-5 sentences) and actionable."""
-            
-            from langchain_core.messages import HumanMessage, SystemMessage
-            messages = [
-                SystemMessage(content=self.system_prompt),
-                HumanMessage(content=insight_prompt)
-            ]
-            
-            insights = self.llm.invoke(messages)
-            full_summary += f"\n\n## 🎯 AI Insights\n\n{insights.content}\n"
+## Context
+"""
         
-        return {
-            "raw_data": full_summary,
-            "summary": "Comprehensive summary generated",
-            "key_findings": key_data
-        }
+        # Add order context
+        if all_findings["order_id"]:
+            prompt += f"- **Order ID:** {all_findings['order_id']}"
+            if all_findings["enriched"]:
+                prompt += " ✅ (Enriched from D-prefix)"
+            prompt += f"\n- **Date:** {all_findings['date']}\n"
+        
+        # Add comparison context if applicable
+        if intent == "Comparison" and all_findings["comparison_order_id"]:
+            prompt += f"- **Comparison Order ID:** {all_findings['comparison_order_id']}\n"
+            prompt += f"- **Comparison Date:** {all_findings['comparison_date']}\n"
+        
+        # Add primary findings
+        prompt += f"\n## Agent Findings\n{primary_formatted}\n"
+        
+        # Add comparison findings if available
+        if all_findings["comparison_findings"]:
+            comparison_formatted = self._format_agent_findings(all_findings["comparison_findings"])
+            prompt += f"\n## Comparison Order Findings\n{comparison_formatted}\n"
+        
+        # Add instructions
+        prompt += """
+---
+
+## Your Task
+
+Create a **comprehensive, executive-ready summary** that includes:
+
+### 1. Executive Summary (2-3 sentences)
+A high-level overview of what was investigated and the key outcome.
+
+### 2. Key Findings
+List the most important discoveries, organized by topic:
+- Order processing status
+- Any errors or issues identified
+- Performance metrics
+- Configuration details
+
+### 3. Technical Details
+Provide relevant technical information:
+- Splunk log analysis (if available)
+- Database query results
+- API responses
+- System health metrics
+
+### 4. Issues & Anomalies (if any)
+Highlight any problems discovered:
+- Error messages
+- Unexpected behavior
+- Performance issues
+- Configuration problems
+
+### 5. Recommendations (if applicable)
+Suggest next steps or actions based on findings.
+
+### 6. Comparison Analysis (for comparison intent only)
+If this is a comparison, provide:
+- Side-by-side analysis of key differences
+- Similarities and patterns
+- Potential reasons for differences
+
+## Formatting Guidelines
+- Use **clear section headers**
+- Use bullet points for lists
+- **Bold** important terms and values
+- Use `code formatting` for technical identifiers (order IDs, error codes)
+- Keep it concise but comprehensive
+- Focus on actionable insights
+
+Generate the summary now:
+"""
+        
+        return prompt
+    
+    def _execute_tool(self, context: Dict, state: Dict) -> Dict[str, Any]:
+        """
+        Generate comprehensive summary using LLM
+        
+        Args:
+            context: Investigation context
+            state: Agent state with all findings
+            
+        Returns:
+            Dict with generated summary
+        """
+        # Extract all findings
+        all_findings = self._extract_all_findings(state)
+        
+        # Check if there are any findings to summarize
+        if not all_findings["primary_findings"] and not all_findings["comparison_findings"]:
+            return {
+                "raw_data": "No findings available to summarize.",
+                "summary": "No agent findings were collected."
+            }
+        
+        # Generate summary prompt
+        summary_prompt = self._generate_summary_prompt(all_findings)
+        
+        # Call LLM to generate summary
+        messages = [
+            SystemMessage(content=self.system_prompt),
+            HumanMessage(content=summary_prompt)
+        ]
+        
+        try:
+            response = self.llm.invoke(messages)
+            detailed_summary = response.content
+            
+            # Create a brief one-liner for the summary field
+            brief_summary = detailed_summary.split('\n')[0][:200] + "..."
+            
+            return {
+                "raw_data": detailed_summary,
+                "summary": brief_summary,
+                "full_summary": detailed_summary,
+                "status": "success"
+            }
+            
+        except Exception as e:
+            # Fallback to simple concatenation if LLM fails
+            fallback_summary = self._create_fallback_summary(all_findings)
+            
+            return {
+                "raw_data": fallback_summary,
+                "summary": "Summary generated using fallback method",
+                "error": str(e),
+                "status": "fallback"
+            }
+    
+    def _create_fallback_summary(self, all_findings: Dict[str, Any]) -> str:
+        """
+        Create a simple summary without LLM (fallback)
+        
+        Args:
+            all_findings: All findings from agents
+            
+        Returns:
+            Basic formatted summary
+        """
+        summary_parts = [
+            f"# Investigation Summary\n",
+            f"**User Query:** {all_findings['user_query']}\n",
+            f"**Intent:** {all_findings['intent']}\n\n"
+        ]
+        
+        # Add order info
+        if all_findings["order_id"]:
+            summary_parts.append(f"**Order ID:** {all_findings['order_id']}\n")
+            summary_parts.append(f"**Date:** {all_findings['date']}\n\n")
+        
+        # Add findings
+        summary_parts.append("## Findings\n\n")
+        
+        for agent_name, data in all_findings["primary_findings"].items():
+            if isinstance(data, dict) and "summary" in data:
+                summary_parts.append(f"- **{agent_name}:** {data['summary']}\n")
+        
+        return "".join(summary_parts)
