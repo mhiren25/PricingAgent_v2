@@ -1,6 +1,6 @@
 """
-Main workflow construction - includes Order Enricher and Summarization Agent
-Fixed flow with Order ID enrichment for D-prefixed orders
+Main workflow construction - Complete Fixed Version
+Includes: Order Enrichment, Date Handling, Comparison Flow, Proper State Management
 """
 
 from langgraph.graph import StateGraph, END
@@ -9,7 +9,7 @@ from src.models.state import AgentState
 
 
 def create_supervisor_graph():
-    """Create optimized multi-agent workflow with order enrichment and conditional routing"""
+    """Create optimized multi-agent workflow with all fixes"""
     
     supervisor = SupervisorAgent()
     workflow = StateGraph(AgentState)
@@ -46,19 +46,26 @@ def create_supervisor_graph():
     workflow.add_edge("switch_to_comparison", "splunkagent")
     workflow.add_edge("switch_to_comparison_enricher", "orderenricheragent")
     
-    # Add all agent nodes dynamically (including Order Enricher and Summarization)
+    # Add all agent nodes dynamically
     for agent_name, agent_instance in supervisor.agents.items():
         node_name = agent_name.lower().replace("_", "")
         
         def make_node(agent):
             def node(state):
                 result = agent.execute(state)
-                result["sender"] = agent.name
                 result["investigation_step"] = state.get("investigation_step", 0) + 1
                 return result
             return node
         
         workflow.add_node(node_name, make_node(agent_instance))
+    
+    # Helper function to check if order needs enrichment
+    def needs_enrichment(order_id):
+        """Check if order ID needs enrichment (D-prefix with 9 chars after removing dots)"""
+        if not order_id:
+            return False
+        clean_id = order_id.replace(".", "")
+        return clean_id.startswith("D") and len(clean_id) == 9
     
     # Routing functions
     def route_from_supervisor(state):
@@ -79,18 +86,15 @@ def create_supervisor_graph():
             state["actual_order_id"] = None
         
         # Check if order enrichment is needed
-        # Only for Investigation/Comparison intents that will use Splunk
         if intent in ["Investigation", "Comparison", "Data"]:
             if order_id and needs_enrichment(order_id):
                 # Order needs enrichment - route to Order Enricher
-                # Note: enrichment_flow will be set by Order Enricher Agent
                 return "orderenricheragent"
             else:
-                # Order doesn't need enrichment, ensure flags are False/None
-                state["aaa_order_id"] = None
-                state["enrichment_flow"] = False
+                # Order doesn't need enrichment
+                pass  # Continue to normal routing
         
-        # Normal routing for non-enrichment cases
+        # Normal routing
         if intent == "Knowledge":
             return "vectordbagent"
         elif intent == "Data":
@@ -103,148 +107,206 @@ def create_supervisor_graph():
             return "splunkagent"
         return "splunkagent"
     
-    def needs_enrichment(order_id):
-        """Check if order ID needs enrichment (D-prefix with 9 chars after removing dots)"""
-        if not order_id:
-            return False
-        
-        # Remove dots
-        clean_id = order_id.replace(".", "")
-        
-        # Check if starts with D and has exactly 9 characters
-        return clean_id.startswith("D") and len(clean_id) == 9
-    
-    def route_from_order_enricher(state):
-        """Route after Order Enricher - always go to DB Agent to get actual order ID"""
-        return "databaseagent"
-    
     def route_after_enrichment_db(state):
         """Route after DB Agent completes enrichment - continue to Splunk"""
-        # After enrichment DB call, always proceed to Splunk with actual order ID
-        # enrichment_flow flag is already cleared by DB Agent
         return "splunkagent"
     
     def route_next_agent(state):
         """
         Pure routing function - determines next agent
-        Handles conditional Splunk routing and enrichment flow
+        IMPORTANT: This function should NOT modify state - only return next node name
         """
         sender = state.get("sender", "")
         params = state.get("parameters")
         intent = params.intent if params else "Investigation"
         current_inv = state.get("current_investigation", "primary")
+        step = state.get("investigation_step", 0)
+        
+        # DEBUG LOGGING
+        print(f"\n{'='*60}")
+        print(f"[ROUTING] Step {step}")
+        print(f"  Sender: {sender}")
+        print(f"  Intent: {intent}")
+        print(f"  Investigation Phase: {current_inv}")
+        print(f"  Enrichment Flow: {state.get('enrichment_flow', False)}")
+        print(f"  Actual Order ID: {state.get('actual_order_id')}")
+        print(f"{'='*60}")
         
         # If Summarization Agent just ran, go to synthesis
         if sender == "Summarization_Agent":
+            print(f"[ROUTING] → synthesize (from Summarization Agent)")
             return "synthesize"
         
-        # Single agent paths - go to summarization before synthesis
+        # Single agent paths
         if intent in ["Knowledge", "Data", "Monitoring"]:
+            print(f"[ROUTING] → summarizationagent (simple intent)")
             return "summarizationagent"
         
         # Code analysis
         if intent == "CodeAnalysis":
             if sender == "Database_Agent":
+                print(f"[ROUTING] → codeagent")
                 return "codeagent"
             elif sender == "Code_Agent":
+                print(f"[ROUTING] → summarizationagent")
                 return "summarizationagent"
+            print(f"[ROUTING] → summarizationagent (fallback)")
             return "summarizationagent"
         
-        # Comparison flow - investigate BOTH orders completely
+        # COMPARISON FLOW
         if intent == "Comparison":
+            print(f"\n[COMPARISON FLOW] Phase: {current_inv}, Sender: {sender}")
+            
             if current_inv == "primary":
-                # Primary order investigation
+                print(f"[PRIMARY INVESTIGATION]")
+                
                 if sender == "Splunk_Agent":
-                    # Check if Splunk found logs
-                    splunk_findings = state.get("findings", {}).get("Splunk_Agent", {})
-                    if splunk_findings.get("logs_found", False):
-                        # Logs found, skip DB and DebugAPI
-                        # Switch to comparison order investigation
-                        state["current_investigation"] = "comparison"
-                        state["investigation_step"] = 0
-                        
-                        # Reset enrichment flags for comparison order
-                        state["aaa_order_id"] = None
-                        state["enrichment_flow"] = False
-                        state["actual_order_id"] = None
-                        
-                        # Check if comparison order needs enrichment
-                        comparison_order = params.comparison_order_id if hasattr(params, 'comparison_order_id') else None
-                        if comparison_order and needs_enrichment(comparison_order):
-                            # Don't set enrichment_flow here - let Order Enricher do it
-                            return "orderenricheragent"
+                    print(f"[PRIMARY] Splunk completed - switch to comparison phase")
+                    comparison_order = params.comparison_order_id if hasattr(params, 'comparison_order_id') else None
+                    print(f"[PRIMARY] Comparison order: {comparison_order}")
+                    
+                    if comparison_order and needs_enrichment(comparison_order):
+                        print(f"[PRIMARY] → switch_to_comparison_enricher")
+                        return "switch_to_comparison_enricher"
+                    
+                    print(f"[PRIMARY] → switch_to_comparison")
+                    return "switch_to_comparison"
+                
+                elif sender == "Order_Enricher_Agent":
+                    print(f"[PRIMARY] → databaseagent (after Order Enricher)")
+                    return "databaseagent"
+                
+                elif sender == "Database_Agent":
+                    enrichment_completed = state.get("actual_order_id") is not None
+                    enrichment_active = state.get("enrichment_flow", False)
+                    
+                    print(f"[PRIMARY] DB Agent - enrichment_completed: {enrichment_completed}, enrichment_active: {enrichment_active}")
+                    
+                    # Check message history to determine context
+                    messages = state.get("messages", [])
+                    recent_agents = [msg.name for msg in messages[-5:] if hasattr(msg, 'name')]
+                    print(f"[PRIMARY] Recent agents: {recent_agents}")
+                    
+                    if "Splunk_Agent" in recent_agents:
+                        print(f"[PRIMARY] → debugapiagent (DB called after Splunk for trade fields)")
+                        return "debugapiagent"
+                    elif enrichment_completed and not enrichment_active:
+                        print(f"[PRIMARY] → splunkagent (after enrichment)")
                         return "splunkagent"
                     else:
-                        # No logs, proceed to DB
-                        return "databaseagent"
-                        
-                elif sender == "Database_Agent":
-                    return "debugapiagent"
-                    
+                        print(f"[PRIMARY] → debugapiagent (fallback)")
+                        return "debugapiagent"
+                
                 elif sender == "DebugAPI_Agent":
-                    # Primary complete, switch to comparison order
-                    state["current_investigation"] = "comparison"
-                    state["investigation_step"] = 0
-                    
-                    # Reset enrichment flags for comparison order
-                    state["aaa_order_id"] = None
-                    state["enrichment_flow"] = False
-                    state["actual_order_id"] = None
-                    
-                    # Check if comparison order needs enrichment
+                    print(f"[PRIMARY] DebugAPI completed - switch to comparison phase")
                     comparison_order = params.comparison_order_id if hasattr(params, 'comparison_order_id') else None
+                    
                     if comparison_order and needs_enrichment(comparison_order):
-                        # Don't set enrichment_flow here - let Order Enricher do it
-                        return "orderenricheragent"
-                    return "splunkagent"
+                        print(f"[PRIMARY] → switch_to_comparison_enricher")
+                        return "switch_to_comparison_enricher"
                     
+                    print(f"[PRIMARY] → switch_to_comparison")
+                    return "switch_to_comparison"
+            
             elif current_inv == "comparison":
-                # Comparison order investigation
+                print(f"[COMPARISON INVESTIGATION]")
+                
                 if sender == "Splunk_Agent":
-                    # Check if Splunk found logs for comparison order
-                    splunk_findings = state.get("findings", {}).get("Splunk_Agent", {})
-                    if splunk_findings.get("logs_found", False):
-                        # Logs found, skip DB and DebugAPI, go to comparison
-                        return "comparisonagent"
-                    else:
-                        # No logs, proceed to DB
-                        return "databaseagent"
-                        
-                elif sender == "Database_Agent":
-                    return "debugapiagent"
+                    comparison_splunk = state.get("comparison_findings", {}).get("Splunk_Agent", {})
+                    logs_found = comparison_splunk.get("logs_found", False)
                     
+                    print(f"[COMPARISON] Splunk completed - logs_found: {logs_found}")
+                    print(f"[COMPARISON] → comparisonagent (both orders investigated)")
+                    return "comparisonagent"
+                
+                elif sender == "Order_Enricher_Agent":
+                    print(f"[COMPARISON] → databaseagent (after Order Enricher)")
+                    return "databaseagent"
+                
+                elif sender == "Database_Agent":
+                    enrichment_completed = state.get("comparison_actual_order_id") is not None
+                    enrichment_active = state.get("comparison_enrichment_flow", False)
+                    
+                    print(f"[COMPARISON] DB Agent - enrichment_completed: {enrichment_completed}, enrichment_active: {enrichment_active}")
+                    
+                    # Check message history
+                    messages = state.get("messages", [])
+                    recent_agents = [msg.name for msg in messages[-5:] if hasattr(msg, 'name')]
+                    print(f"[COMPARISON] Recent agents: {recent_agents}")
+                    
+                    if "Splunk_Agent" in recent_agents:
+                        print(f"[COMPARISON] → debugapiagent (DB called after Splunk for trade fields)")
+                        return "debugapiagent"
+                    elif enrichment_completed and not enrichment_active:
+                        print(f"[COMPARISON] → splunkagent (after enrichment)")
+                        return "splunkagent"
+                    else:
+                        print(f"[COMPARISON] → debugapiagent (fallback)")
+                        return "debugapiagent"
+                
                 elif sender == "DebugAPI_Agent":
-                    # Both orders investigated, now compare
+                    print(f"[COMPARISON] DebugAPI completed")
+                    print(f"[COMPARISON] → comparisonagent (both orders investigated)")
                     return "comparisonagent"
             
-            # After comparison analysis
             if sender == "Comparison_Agent":
+                print(f"[ROUTING] → summarizationagent (after Comparison Agent)")
                 return "summarizationagent"
         
-        # Investigation flow (single order) - conditional routing based on Splunk results
+        # INVESTIGATION FLOW (single order)
         if intent == "Investigation":
-            if sender == "Splunk_Agent":
-                # Check if Splunk found logs
+            print(f"\n[INVESTIGATION FLOW] Sender: {sender}")
+            
+            if sender == "Order_Enricher_Agent":
+                print(f"[INVESTIGATION] → databaseagent (after Order Enricher)")
+                return "databaseagent"
+            
+            elif sender == "Splunk_Agent":
                 splunk_findings = state.get("findings", {}).get("Splunk_Agent", {})
-                if splunk_findings.get("logs_found", False):
-                    # Logs found in Splunk, skip DB and DebugAPI, go straight to Summarization
+                logs_found = splunk_findings.get("logs_found", False)
+                
+                print(f"[INVESTIGATION] Splunk logs_found: {logs_found}")
+                
+                if logs_found:
+                    print(f"[INVESTIGATION] → summarizationagent (logs found)")
                     return "summarizationagent"
                 else:
-                    # No logs found, proceed to Database Agent
+                    print(f"[INVESTIGATION] → databaseagent (no logs, need trade fields)")
                     return "databaseagent"
-                    
+            
             elif sender == "Database_Agent":
-                return "debugapiagent"
+                enrichment_completed = state.get("actual_order_id") is not None
+                enrichment_active = state.get("enrichment_flow", False)
                 
+                print(f"[INVESTIGATION] DB Agent - enrichment_completed: {enrichment_completed}, enrichment_active: {enrichment_active}")
+                
+                # Check message history to determine context
+                messages = state.get("messages", [])
+                recent_agents = [msg.name for msg in messages[-5:] if hasattr(msg, 'name')]
+                print(f"[INVESTIGATION] Recent agents: {recent_agents}")
+                
+                # If Splunk was called before this DB call, we're getting trade fields
+                if "Splunk_Agent" in recent_agents:
+                    print(f"[INVESTIGATION] → debugapiagent (DB called after Splunk for trade fields)")
+                    return "debugapiagent"
+                elif enrichment_completed and not enrichment_active:
+                    print(f"[INVESTIGATION] → splunkagent (after enrichment)")
+                    return "splunkagent"
+                else:
+                    print(f"[INVESTIGATION] → debugapiagent (fallback)")
+                    return "debugapiagent"
+            
             elif sender == "DebugAPI_Agent":
+                print(f"[INVESTIGATION] → summarizationagent")
                 return "summarizationagent"
         
+        print(f"[ROUTING] → summarizationagent (fallback)")
         return "summarizationagent"
     
     # Set entry point
     workflow.set_entry_point("supervisor")
     
-    # Supervisor routing - includes order enricher option
+    # Supervisor routing
     workflow.add_conditional_edges("supervisor", route_from_supervisor, {
         "vectordbagent": "vectordbagent",
         "splunkagent": "splunkagent",
@@ -256,9 +318,6 @@ def create_supervisor_graph():
         "synthesize": "synthesize"
     })
     
-    # Order Enricher always routes to DB Agent
-    workflow.add_edge("orderenricheragent", "databaseagent")
-    
     # All agents route through the same logic
     for agent_name in supervisor.agents.keys():
         node_name = agent_name.lower().replace("_", "")
@@ -266,18 +325,14 @@ def create_supervisor_graph():
         # Special handling for Database Agent when coming from Order Enricher
         if node_name == "databaseagent":
             def db_router(state):
-                # Check if this DB call is right after Order Enricher (enrichment lookup)
                 sender = state.get("sender", "")
                 enrichment_just_completed = state.get("actual_order_id") and not state.get("enrichment_flow")
                 
                 if sender == "Order_Enricher_Agent":
-                    # This is enrichment lookup, route to Splunk after
                     return route_after_enrichment_db(state)
                 elif enrichment_just_completed and sender == "Database_Agent":
-                    # Just completed enrichment in previous DB call, now route based on intent
                     return route_after_enrichment_db(state)
                 else:
-                    # Normal DB Agent flow (trade fields lookup, etc.)
                     return route_next_agent(state)
             
             workflow.add_conditional_edges(
