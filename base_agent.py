@@ -317,7 +317,8 @@ Provide a concise, actionable summary (3-5 sentences max).
             # Pass through any enrichment fields from findings
             updates = {
                 "messages": [ai_message],
-                "sender": self.name
+                "sender": self.name,
+                "investigation_step": state.get("investigation_step", 0) + 1  # Increment step
             }
             
             # Pass through enrichment state updates if present
