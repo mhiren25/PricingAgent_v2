@@ -143,7 +143,7 @@ class BaseAgent(ABC):
         Store findings in appropriate state location
         
         Only stores essential data to prevent state bloat.
-        Large data stored in cache with reference.
+        For agents called multiple times (like DB Agent), append to a list.
         
         Args:
             state: Agent state
@@ -155,16 +155,40 @@ class BaseAgent(ABC):
         if findings_key not in state:
             state[findings_key] = {}
         
-        # Store only essential data
-        state[findings_key][self.name] = {
-            "summary": findings.get("summary", ""),
-            "analysis": findings.get("analysis", ""),
-            "order_id": context.get("order_id"),
-            "timestamp": datetime.now().isoformat(),
-            "cache_key": findings.get("cache_key"),  # Reference to large data
-            "logs_found": findings.get("logs_found"),  # Important for routing
-            "enriched": context.get("enriched", False)  # Track if order was enriched
-        }
+        # Check if this agent was already called (e.g., DB Agent twice)
+        if self.name in state[findings_key]:
+            # Agent called multiple times - store as list
+            existing = state[findings_key][self.name]
+            
+            # Convert to list if not already
+            if not isinstance(existing, list):
+                state[findings_key][self.name] = [existing]
+            
+            # Append new findings
+            state[findings_key][self.name].append({
+                "summary": findings.get("summary", ""),
+                "analysis": findings.get("analysis", ""),
+                "order_id": context.get("order_id"),
+                "timestamp": datetime.now().isoformat(),
+                "cache_key": findings.get("cache_key"),
+                "logs_found": findings.get("logs_found"),
+                "enriched": context.get("enriched", False),
+                "enrichment_completed": findings.get("enrichment_completed", False),
+                "actual_order_id": findings.get("actual_order_id")
+            })
+        else:
+            # First call - store as dict
+            state[findings_key][self.name] = {
+                "summary": findings.get("summary", ""),
+                "analysis": findings.get("analysis", ""),
+                "order_id": context.get("order_id"),
+                "timestamp": datetime.now().isoformat(),
+                "cache_key": findings.get("cache_key"),
+                "logs_found": findings.get("logs_found"),
+                "enriched": context.get("enriched", False),
+                "enrichment_completed": findings.get("enrichment_completed", False),
+                "actual_order_id": findings.get("actual_order_id")
+            }
     
     def _needs_reflection(self, tool_output: str) -> bool:
         """
